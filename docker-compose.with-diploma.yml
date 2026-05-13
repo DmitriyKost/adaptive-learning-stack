@@ -1,32 +1,31 @@
-# Дополнение к docker-compose.yml: Python intelligence из соседнего каталога diploma.
+# Docker Compose override: attach the external diploma intelligence module.
 #
-# Linux/Void-friendly defaults рассчитаны на структуру архива:
-#   adaptive-learning-stack/
-#   diploma/
+# Recommended local layout:
+#   workspace/
+#     adaptive-learning-stack/
+#     diploma/
 #
-# Переменные подстановки можно задать в .env рядом с этим файлом:
-#   DIPLOMA_ROOT            — путь к diploma (по умолчанию ../diploma)
-#   DIPLOMA_MODELS_HOST     — хостовая папка с HF-снапшотом базы → /app/models/base
-#   DIPLOMA_LORA_HOST       — хостовая папка с LoRA → /app/lora_sql_mastery
-#   INTELLIGENCE_HOST_PORT  — порт на хосте для CPU (по умолчанию 8090; api-gateway занимает 8080)
-#   LLM_PROVIDER            — local или ollama (для быстрых тестов: ollama)
-#   OLLAMA_BASE_URL         — URL Ollama, видимый из контейнера intelligence
-#   OLLAMA_MODEL            — например llama3.1:8b-instruct-q6_K
+# This file runs the real local Hugging Face base model + PEFT LoRA in a Docker
+# container. Ollama is not used here.
 #
-# Запуск вместе со стеком из каталога adaptive-learning-stack:
+# Required host paths, usually configured in .env next to this file:
+#   DIPLOMA_ROOT        — path to the external diploma repository, default ../diploma
+#   DIPLOMA_MODELS_HOST — local Hugging Face snapshot of the base model, default ../diploma/models/base
+#   DIPLOMA_LORA_HOST   — LoRA adapter directory, default ../diploma/lora_sql_mastery
+#
+# CPU run, mostly for small local models:
 #   docker compose -f docker-compose.yml -f docker-compose.with-diploma.yml up --build
 #
-# GPU-контейнер (NVIDIA Container Toolkit):
-#   docker compose -f docker-compose.yml -f docker-compose.with-diploma.yml --profile gpu up --build intelligence-gpu
-# Затем для analytics-service задайте INTELLIGENCE_BASE_URL=http://intelligence-gpu:8080
-# или используйте отдельный override под свой GPU-сценарий.
+# NVIDIA GPU run for the provided Llama 3.1 8B 4-bit LoRA:
+#   docker compose -f docker-compose.yml -f docker-compose.with-diploma.yml \
+#     -f docker-compose.with-diploma.gpu.yml up --build
 
 services:
   intelligence:
     build:
       context: ${DIPLOMA_ROOT:-../diploma}
       dockerfile: Dockerfile
-    image: adaptive-sql-intelligence:local
+    image: adaptive-sql-intelligence:local-lora
     container_name: adaptive-sql-intelligence
     ports:
       - "${INTELLIGENCE_HOST_PORT:-8090}:8080"
@@ -34,55 +33,22 @@ services:
       - path: ${DIPLOMA_ROOT:-../diploma}/.env
         required: false
     environment:
-      # LLM_PROVIDER=local: transformers + PEFT LoRA; LLM_PROVIDER=ollama: внешний Ollama API.
-      ANALYTICS_LLM_PROVIDER: ${LLM_PROVIDER:-local}
-      ANALYTICS_OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-      ANALYTICS_OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1:8b-instruct-q6_K}
-      ANALYTICS_OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-600}
-      # Пути внутри контейнера; используются только в local-режиме.
-      ANALYTICS_LLM_BASE_MODEL_PATH: models/base
-      ANALYTICS_LLM_LORA_PATH: lora_sql_mastery
-    extra_hosts:
-      # Native Linux: имя host.docker.internal будет указывать на Docker host gateway.
-      - "host.docker.internal:host-gateway"
+      ANALYTICS_LLM_BASE_MODEL_PATH: /app/models/base
+      ANALYTICS_LLM_LORA_PATH: /app/lora_sql_mastery
+      ANALYTICS_LLM_LOAD_IN_4BIT: ${LLM_LOAD_IN_4BIT:-true}
+      ANALYTICS_LLM_DEVICE_MAP: ${LLM_DEVICE_MAP:-auto}
+      ANALYTICS_LLM_TORCH_DTYPE: ${LLM_TORCH_DTYPE:-auto}
+      ANALYTICS_LLM_BNB_4BIT_COMPUTE_DTYPE: ${LLM_BNB_4BIT_COMPUTE_DTYPE:-float16}
+      ANALYTICS_LLM_BNB_4BIT_QUANT_TYPE: ${LLM_BNB_4BIT_QUANT_TYPE:-nf4}
+      ANALYTICS_LLM_BNB_4BIT_USE_DOUBLE_QUANT: ${LLM_BNB_4BIT_USE_DOUBLE_QUANT:-true}
+      ANALYTICS_LLM_MAX_NEW_TOKENS: ${LLM_MAX_NEW_TOKENS:-512}
+      ANALYTICS_LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.2}
+      HF_HOME: /app/.cache/huggingface
+      TRANSFORMERS_CACHE: /app/.cache/huggingface/transformers
     volumes:
       - ${DIPLOMA_MODELS_HOST:-../diploma/models/base}:/app/models/base:ro
       - ${DIPLOMA_LORA_HOST:-../diploma/lora_sql_mastery}:/app/lora_sql_mastery:ro
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/ready', timeout=5)\""]
-      interval: 10s
-      timeout: 10s
-      retries: 30
-      start_period: 30s
-    restart: unless-stopped
-
-  intelligence-gpu:
-    profiles:
-      - gpu
-    build:
-      context: ${DIPLOMA_ROOT:-../diploma}
-      dockerfile: Dockerfile
-    image: adaptive-sql-intelligence:local-gpu
-    container_name: adaptive-sql-intelligence-gpu
-    ports:
-      - "${INTELLIGENCE_GPU_HOST_PORT:-8091}:8080"
-    env_file:
-      - path: ${DIPLOMA_ROOT:-../diploma}/.env
-        required: false
-    environment:
-      ANALYTICS_LLM_PROVIDER: ${LLM_PROVIDER:-local}
-      ANALYTICS_OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-      ANALYTICS_OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1:8b-instruct-q6_K}
-      ANALYTICS_OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-600}
-      ANALYTICS_LLM_BASE_MODEL_PATH: models/base
-      ANALYTICS_LLM_LORA_PATH: lora_sql_mastery
-      NVIDIA_VISIBLE_DEVICES: all
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    volumes:
-      - ${DIPLOMA_MODELS_HOST:-../diploma/models/base}:/app/models/base:ro
-      - ${DIPLOMA_LORA_HOST:-../diploma/lora_sql_mastery}:/app/lora_sql_mastery:ro
-    gpus: all
+      - diploma-hf-cache:/app/.cache/huggingface
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/ready', timeout=5)\""]
       interval: 10s
@@ -106,3 +72,6 @@ services:
         condition: service_completed_successfully
       intelligence:
         condition: service_healthy
+
+volumes:
+  diploma-hf-cache:

@@ -92,48 +92,126 @@ curl -s -X POST http://localhost:8080/playground/execute \
 После события `playground.execution.completed` сервис `task-progress` проверит результат и отправит события в аналитику. После успешного решения `/tasks/next` может вернуть `409 analysis_pending` до получения LLM-рекомендаций от analytics или до истечения soft timeout.
 
 
-## Запуск с внешним интеллектуальным модулем (`diploma`)
+## Запуск с внешним интеллектуальным модулем (`diploma`) и LoRA
 
-В этом архиве `adaptive-learning-stack/` и `diploma/` лежат рядом, поэтому Linux/Void-запуск не требует Windows-путей:
+Рекомендуемая структура каталогов:
 
-```bash
-cd adaptive-learning-stack
-cp .env.example .env   # необязательно, только если хотите менять пути/порты
+```text
+workspace/
+  adaptive-learning-stack/
+  diploma/
 ```
 
-Для быстрого smoke-теста можно использовать Ollama вместо Hugging Face base + LoRA. В `.env.example` уже стоит:
+Внешний модуль запускается как Docker-контейнер `intelligence` в той же compose-сети. Он грузит Hugging Face base model из `../diploma/models/base` и LoRA из `../diploma/lora_sql_mastery`. Ollama для этого режима не используется.
+
+### 1. Подготовить базовую модель
+
+LoRA в `diploma/lora_sql_mastery/adapter_config.json` указывает на base model:
+
+```text
+unsloth/meta-llama-3.1-8b-instruct-unsloth-bnb-4bit
+```
+
+Скачайте её в Hugging Face формате, не GGUF/Ollama:
+
+```bash
+cd ../diploma
+python3 -m pip install -U "huggingface_hub[cli]"
+huggingface-cli download \
+  unsloth/meta-llama-3.1-8b-instruct-unsloth-bnb-4bit \
+  --local-dir models/base
+```
+
+Или из `adaptive-learning-stack`:
+
+```bash
+./scripts/download-diploma-base-model.sh
+```
+
+Если Hugging Face вернёт 401/403, сначала выполните `huggingface-cli login` и примите условия доступа к base model.
+
+Если модель лежит в другом месте, задайте путь в `adaptive-learning-stack/.env`:
 
 ```dotenv
-LLM_PROVIDER=ollama
-OLLAMA_BASE_URL=http://host.docker.internal:11434
-OLLAMA_MODEL=llama3.1:8b-instruct-q6_K
+DIPLOMA_MODELS_HOST=/absolute/path/to/base-model
+DIPLOMA_LORA_HOST=/absolute/path/to/lora_sql_mastery
 ```
 
-На Linux/Void Ollama на хосте должен слушать не только `127.0.0.1`, иначе контейнер `intelligence` его не увидит. Для локального теста:
+### 2. Настроить compose env
 
 ```bash
-OLLAMA_HOST=0.0.0.0:11434 ollama serve
-ollama pull llama3.1:8b-instruct-q6_K
+cd ../adaptive-learning-stack
+cp .env.example .env
 ```
 
-Затем запускайте стек:
+Ключевые значения по умолчанию:
+
+```dotenv
+DIPLOMA_ROOT=../diploma
+DIPLOMA_MODELS_HOST=../diploma/models/base
+DIPLOMA_LORA_HOST=../diploma/lora_sql_mastery
+LLM_LOAD_IN_4BIT=true
+```
+
+### 3. Запуск на NVIDIA GPU
+
+Для Llama 3.1 8B 4-bit нужен Docker с NVIDIA Container Toolkit. Проверка на хосте:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.with-diploma.yml up --build
+nvidia-smi
+docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
 ```
 
-Если нужен исходный LoRA-режим, поставьте `LLM_PROVIDER=local`, положите базовую Hugging Face-модель в `../diploma/models/base` или переопределите путь через `DIPLOMA_MODELS_HOST` в `.env`. LoRA уже ожидается в `../diploma/lora_sql_mastery`.
-
-После запуска:
+Запуск полного стека:
 
 ```bash
-curl http://localhost:8090/health     # Python intelligence напрямую
-curl http://localhost:8090/ready      # проверка backend-провайдера: Ollama или local model
-curl http://localhost:8084/health     # analytics-service
-curl http://localhost:8080/health     # api-gateway
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.with-diploma.yml \
+  -f docker-compose.with-diploma.gpu.yml \
+  up -d --build --force-recreate
 ```
 
-`analytics-service` всегда использует внешний intelligence HTTP API:
+CPU-режим оставлен только для маленьких совместимых моделей. Для него нужно выставить `LLM_LOAD_IN_4BIT=false`, но 8B-модель будет медленной и потребует много RAM.
+
+### 4. Проверка readiness и прогрев модели
+
+```bash
+curl -sS http://localhost:8090/health | jq .
+curl -sS http://localhost:8090/ready | jq .
+```
+
+`/ready` проверяет, что base model и LoRA примонтированы. Чтобы загрузить модель в память до E2E-теста:
+
+```bash
+curl -sS -X POST http://localhost:8090/warmup \
+  -H 'Content-Type: application/json' \
+  -d '{}' | jq .
+```
+
+### 5. Полный smoke-test
+
+```bash
+chmod +x scripts/smoke-e2e-llm.sh
+MAX_WAIT_SECONDS=600 ./scripts/smoke-e2e-llm.sh
+```
+
+Smoke-test делает полный прогон нового пользователя:
+
+```text
+api-gateway → playground → Kafka → task-progress → Kafka → analytics-service → intelligence/LoRA → analytics.skill_assessment.updated → learner model → planner /tasks/next
+```
+
+Успех подтверждается строками:
+
+```text
+OK intelligence model loaded
+OK LLM run completed: ...
+OK planner returned next_task_id=...
+OK E2E smoke test passed
+```
+
+`analytics-service` использует внешний intelligence HTTP API:
 
 ```text
 INTELLIGENCE_BASE_URL=http://intelligence:8080
@@ -141,8 +219,6 @@ INTELLIGENCE_READY_PATH=/ready
 INTELLIGENCE_HTTP_TIMEOUT=600s
 HINT_GENERATION_TIMEOUT=600s
 ```
-
-Если запускаете Python-модуль отдельно на хосте, оставьте основной `docker-compose.yml` и задайте для `analytics-service` `INTELLIGENCE_BASE_URL` на адрес, доступный из контейнера. Для Linux обычно удобнее поднимать `intelligence` в той же compose-сети через `docker-compose.with-diploma.yml`, а не использовать `host.docker.internal`.
 
 ## Перезапуск с чистыми данными
 

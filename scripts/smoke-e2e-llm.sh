@@ -2,15 +2,15 @@
 set -euo pipefail
 
 BASE="${BASE:-http://localhost:8080}"
-OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://localhost:11434}"
-OLLAMA_MODEL="${OLLAMA_MODEL:-llama3.1:8b-instruct-q6_K}"
+INTELLIGENCE_BASE="${INTELLIGENCE_BASE:-http://localhost:8090}"
+PREWARM_INTELLIGENCE="${PREWARM_INTELLIGENCE:-true}"
 
 CLICKHOUSE_CONTAINER="${CLICKHOUSE_CONTAINER:-adaptive-clickhouse}"
 TASK_PROGRESS_PG_CONTAINER="${TASK_PROGRESS_PG_CONTAINER:-adaptive-task-progress-postgres}"
 
 TASK_ID="${TASK_ID:-00000000-0000-0000-0000-000000010001}"
 PASSWORD="${PASSWORD:-password123}"
-EMAIL="${EMAIL:-student+ollama-e2e-$(date +%s)@example.com}"
+EMAIL="${EMAIL:-student+lora-e2e-$(date +%s)@example.com}"
 
 MAX_WAIT_SECONDS="${MAX_WAIT_SECONDS:-180}"
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-3}"
@@ -48,24 +48,23 @@ READY_STATUS="$(printf '%s\n' "$READY_JSON" | jq -r '.status // empty')"
 
 ok "gateway ready"
 
-log "Warming Ollama model: $OLLAMA_MODEL"
-curl -fsS "$OLLAMA_BASE_URL/api/generate" \
-  -H 'Content-Type: application/json' \
-  -d "$(jq -nc \
-    --arg model "$OLLAMA_MODEL" \
-    '{model:$model, stream:false, keep_alive:"30m"}')" \
-  | jq '.done, .done_reason?'
+log "Checking intelligence readiness"
+INTELLIGENCE_READY_JSON="$(curl -fsS "$INTELLIGENCE_BASE/ready" || true)"
+printf '%s\n' "$INTELLIGENCE_READY_JSON" | jq .
 
-OLLAMA_PS="$(curl -fsS "$OLLAMA_BASE_URL/api/ps")"
-printf '%s\n' "$OLLAMA_PS" | jq .
+INTELLIGENCE_READY_STATUS="$(printf '%s\n' "$INTELLIGENCE_READY_JSON" | jq -r '.status // empty')"
+[[ "$INTELLIGENCE_READY_STATUS" == "ready" ]] || fail "intelligence service is not ready"
 
-printf '%s\n' "$OLLAMA_PS" \
-  | jq -e --arg model "$OLLAMA_MODEL" '
-      [.models[]?.name] | any(. == $model)
-    ' >/dev/null \
-  || fail "Ollama model is not loaded according to /api/ps"
-
-ok "Ollama model loaded"
+if [[ "$PREWARM_INTELLIGENCE" == "true" ]]; then
+  log "Prewarming local LoRA model inside intelligence container"
+  curl -fsS -X POST "$INTELLIGENCE_BASE/warmup" \
+    -H 'Content-Type: application/json' \
+    -d '{}' \
+    | jq .
+  ok "intelligence model loaded"
+else
+  ok "intelligence ready; warmup skipped"
+fi
 
 log "Registering fresh user: $EMAIL"
 REGISTER_RESPONSE="$(curl -fsS -X POST "$BASE/auth/register" \
