@@ -1,0 +1,319 @@
+services:
+  redpanda:
+    image: redpandadata/redpanda:v24.2.7
+    container_name: adaptive-redpanda
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp
+      - "1"
+      - --memory
+      - 512M
+      - --reserve-memory
+      - 0M
+      - --node-id
+      - "0"
+      - --check=false
+      - --kafka-addr
+      - internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr
+      - internal://redpanda:9092,external://localhost:${REDPANDA_EXTERNAL_PORT:-19092}
+      - --rpc-addr
+      - 0.0.0.0:33145
+      - --advertise-rpc-addr
+      - redpanda:33145
+    ports:
+      - "${REDPANDA_EXTERNAL_PORT:-19092}:19092"
+      - "${REDPANDA_ADMIN_PORT:-9644}:9644"
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster info --brokers=localhost:9092 >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 20s
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+
+  redpanda-init:
+    image: redpandadata/redpanda:v24.2.7
+    depends_on:
+      redpanda:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-ec"]
+    command: |
+      echo "Waiting for Redpanda"
+      until rpk cluster info --brokers=redpanda:9092 >/dev/null 2>&1; do
+        sleep 2
+      done
+      topics="playground.execution.completed task.checked task.completed task.recommended learner_model.updated analytics.skill_assessment.updated analytics.career_recommendation.created analytics.hint.generated"
+      for topic in $$topics; do
+        rpk topic create "$$topic" --brokers=redpanda:9092 || true
+      done
+      rpk topic list --brokers=redpanda:9092
+    restart: "no"
+
+  auth-postgres:
+    image: postgres:16-alpine
+    container_name: adaptive-auth-postgres
+    environment:
+      POSTGRES_DB: auth
+      POSTGRES_USER: auth
+      POSTGRES_PASSWORD: auth
+    ports:
+      - "${AUTH_POSTGRES_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auth -d auth"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - auth-postgres-data:/var/lib/postgresql/data
+      - ./services/auth-postgres/init:/docker-entrypoint-initdb.d:ro
+
+  auth-migrate:
+    image: postgres:16-alpine
+    depends_on:
+      auth-postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://auth:auth@auth-postgres:5432/auth?sslmode=disable
+    volumes:
+      - ./services/auth-service/migrations:/migrations:ro
+    entrypoint: ["/bin/sh", "-ec"]
+    command: |
+      echo "Applying auth migrations"
+      psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f /migrations/000001_init.up.sql
+      echo "Verifying auth tables"
+      psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -tAc "SELECT to_regclass('public.users')" | grep -q users
+      psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -tAc "SELECT to_regclass('public.refresh_tokens')" | grep -q refresh_tokens
+    restart: "no"
+
+  playground-postgres:
+    image: postgres:16-alpine
+    container_name: adaptive-playground-postgres
+    environment:
+      POSTGRES_DB: playground
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "${PLAYGROUND_POSTGRES_PORT:-5434}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d playground"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - playground-postgres-data:/var/lib/postgresql/data
+      - ./services/playground-postgres/init:/docker-entrypoint-initdb.d:ro
+
+  playground-migrate:
+    image: postgres:16-alpine
+    depends_on:
+      playground-postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@playground-postgres:5432/playground?sslmode=disable
+    volumes:
+      - ./services/playground-service/migrations:/migrations:ro
+    entrypoint: ["/bin/sh", "-ec"]
+    command: |
+      echo "Bootstrapping playground runtime roles"
+      psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE ROLE playground_app LOGIN PASSWORD 'playground_app' NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT" || true
+      psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -c "ALTER ROLE playground_app WITH LOGIN PASSWORD 'playground_app' NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT"
+      psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE ROLE playground_readonly NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT" || true
+      echo "Applying playground migrations"
+      psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f /migrations/000001_secure_playground.up.sql
+      psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f /migrations/000002_course_dataset.up.sql
+      echo "Verifying playground schema, roles and demo dataset"
+      psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_roles WHERE rolname = 'playground_app'" | grep -q 1
+      psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -tAc "SELECT to_regnamespace('playground_internal') IS NOT NULL" | grep -q t
+      psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -tAc "SELECT to_regprocedure('playground_internal.ensure_user_workspace(uuid)') IS NOT NULL" | grep -q t
+      psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -tAc "SELECT to_regclass('task_data.employees') IS NOT NULL" | grep -q t
+    restart: "no"
+
+  task-progress-postgres:
+    image: postgres:16-alpine
+    container_name: adaptive-task-progress-postgres
+    environment:
+      POSTGRES_DB: task_progress
+      POSTGRES_USER: task_progress
+      POSTGRES_PASSWORD: task_progress
+    ports:
+      - "${TASK_PROGRESS_POSTGRES_PORT:-5435}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U task_progress -d task_progress"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - task-progress-postgres-data:/var/lib/postgresql/data
+      - ./services/task-progress-postgres/init:/docker-entrypoint-initdb.d:ro
+
+  task-progress-migrate:
+    image: postgres:16-alpine
+    depends_on:
+      task-progress-postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://task_progress:task_progress@task-progress-postgres:5432/task_progress?sslmode=disable
+    volumes:
+      - ./services/task-progress-service/migrations:/migrations:ro
+    entrypoint: ["/bin/sh", "-ec"]
+    command: |
+      echo "Applying task-progress migrations"
+      psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f /migrations/000001_init.up.sql
+      psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f /migrations/000002_graph_thresholds.up.sql
+      psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f /migrations/000003_async_overrides_and_recommendations.up.sql
+      psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f /migrations/000004_hint_state.up.sql
+      echo "Verifying task-progress tables"
+      psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -tAc "SELECT to_regclass('public.skills')" | grep -q skills
+      psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -tAc "SELECT to_regclass('public.user_skills')" | grep -q user_skills
+    restart: "no"
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    container_name: adaptive-clickhouse
+    environment:
+      CLICKHOUSE_DB: analytics
+      CLICKHOUSE_USER: analytics
+      CLICKHOUSE_PASSWORD: analytics
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - "${CLICKHOUSE_HTTP_PORT:-8123}:8123"
+      - "${CLICKHOUSE_NATIVE_PORT:-9000}:9000"
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --host localhost --port 9000 --user analytics --password analytics --query 'SELECT 1' >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 20s
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+
+  clickhouse-migrate:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    depends_on:
+      clickhouse:
+        condition: service_started
+    volumes:
+      - ./services/analytics-service/migrations:/migrations:ro
+    entrypoint: ["/bin/sh", "-ec"]
+    command: |
+      echo "Waiting for ClickHouse"
+      until clickhouse-client --host clickhouse --port 9000 --user analytics --password analytics --query 'SELECT 1' >/dev/null 2>&1; do
+        sleep 2
+      done
+      echo "Applying ClickHouse migrations"
+      clickhouse-client --host clickhouse --port 9000 --user analytics --password analytics --query 'CREATE DATABASE IF NOT EXISTS analytics'
+      cat /migrations/*.sql | clickhouse-client --host clickhouse --port 9000 --user analytics --password analytics --database analytics --multiquery
+      clickhouse-client --host clickhouse --port 9000 --user analytics --password analytics --database analytics --query "EXISTS TABLE raw_events" | grep -q 1
+    restart: "no"
+
+  auth-service:
+    build:
+      context: ./services/auth-service
+    env_file:
+      - ./env/auth-service.env
+    ports:
+      - "${AUTH_SERVICE_PORT:-8081}:8080"
+    depends_on:
+      auth-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  playground-service:
+    build:
+      context: ./services/playground-service
+    env_file:
+      - ./env/playground-service.env
+    ports:
+      - "${PLAYGROUND_SERVICE_PORT:-8082}:8080"
+    depends_on:
+      playground-migrate:
+        condition: service_completed_successfully
+      redpanda-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  analytics-service:
+    build:
+      context: ./services/analytics-service
+    env_file:
+      - ./env/analytics-service.env
+    ports:
+      - "${ANALYTICS_SERVICE_PORT:-8084}:8083"
+    depends_on:
+      clickhouse-migrate:
+        condition: service_completed_successfully
+      redpanda-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8083/health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  task-progress-service:
+    build:
+      context: ./services/task-progress-service
+    env_file:
+      - ./env/task-progress-service.env
+    ports:
+      - "${TASK_PROGRESS_SERVICE_PORT:-8083}:8082"
+    depends_on:
+      task-progress-migrate:
+        condition: service_completed_successfully
+      playground-service:
+        condition: service_healthy
+      analytics-service:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8082/health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  api-gateway:
+    build:
+      context: ./services/api-gateway
+    env_file:
+      - ./env/api-gateway.env
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+    depends_on:
+      auth-service:
+        condition: service_healthy
+      playground-service:
+        condition: service_healthy
+      task-progress-service:
+        condition: service_healthy
+      analytics-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  redpanda-data:
+  auth-postgres-data:
+  playground-postgres-data:
+  task-progress-postgres-data:
+  clickhouse-data:

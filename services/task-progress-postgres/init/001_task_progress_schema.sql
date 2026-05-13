@@ -1,0 +1,354 @@
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+CREATE TABLE IF NOT EXISTS skills (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    code TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    description TEXT,
+    domain TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS learning_graphs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    code TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    description TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS graph_skills (
+    graph_id UUID NOT NULL REFERENCES learning_graphs(id) ON DELETE CASCADE,
+    skill_id UUID NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+    position INT NOT NULL DEFAULT 0,
+    is_required BOOLEAN NOT NULL DEFAULT true,
+    priority_weight NUMERIC(6, 3) NOT NULL DEFAULT 1.0 CHECK (priority_weight >= 0),
+    mastery_threshold NUMERIC(6, 4) NOT NULL DEFAULT 0.70 CHECK (mastery_threshold > 0 AND mastery_threshold <= 1),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (graph_id, skill_id)
+);
+
+CREATE TABLE IF NOT EXISTS skill_dependencies (
+    graph_id UUID NOT NULL REFERENCES learning_graphs(id) ON DELETE CASCADE,
+    skill_id UUID NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+    depends_on_skill_id UUID NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+    strength NUMERIC(6, 3) NOT NULL DEFAULT 1.0 CHECK (strength > 0),
+    required_mastery NUMERIC(6, 4) CHECK (required_mastery IS NULL OR (required_mastery > 0 AND required_mastery <= 1)),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (graph_id, skill_id, depends_on_skill_id),
+    CHECK (skill_id <> depends_on_skill_id)
+);
+
+CREATE TABLE IF NOT EXISTS tasks (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    difficulty TEXT NOT NULL CHECK (difficulty IN ('easy', 'medium', 'hard')),
+    reference_sql TEXT,
+    dataset_id UUID,
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS task_skills (
+    task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    skill_id UUID NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+    weight NUMERIC(6, 3) NOT NULL DEFAULT 1.0 CHECK (weight > 0),
+    PRIMARY KEY (task_id, skill_id)
+);
+
+CREATE TABLE IF NOT EXISTS user_learning_profiles (
+    user_id UUID PRIMARY KEY,
+    graph_id UUID NOT NULL REFERENCES learning_graphs(id),
+    professional_track TEXT NOT NULL DEFAULT 'core',
+    recommendation_reason TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS user_skills (
+    user_id UUID NOT NULL,
+    skill_id UUID NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+    mastery_score NUMERIC(6, 4) NOT NULL DEFAULT 0 CHECK (mastery_score >= 0 AND mastery_score <= 1),
+    confidence NUMERIC(6, 4) NOT NULL DEFAULT 0 CHECK (confidence >= 0 AND confidence <= 1),
+    attempts_count INT NOT NULL DEFAULT 0 CHECK (attempts_count >= 0),
+    success_count INT NOT NULL DEFAULT 0 CHECK (success_count >= 0),
+    last_used_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, skill_id)
+);
+
+CREATE TABLE IF NOT EXISTS user_task_status (
+    user_id UUID NOT NULL,
+    task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK (status IN ('not_started', 'in_progress', 'solved')),
+    attempts_count INT NOT NULL DEFAULT 0 CHECK (attempts_count >= 0),
+    solved_at TIMESTAMPTZ,
+    last_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_attempt_id UUID,
+    PRIMARY KEY (user_id, task_id)
+);
+
+CREATE TABLE IF NOT EXISTS processed_events (
+    event_id UUID NOT NULL,
+    consumer TEXT NOT NULL,
+    processed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (event_id, consumer)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_active ON tasks(is_active);
+CREATE INDEX IF NOT EXISTS idx_user_skills_user ON user_skills(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_task_status_user ON user_task_status(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_skill_dependencies_graph_skill ON skill_dependencies(graph_id, skill_id);
+
+INSERT INTO skills (id, code, name, description, domain) VALUES
+('00000000-0000-0000-0000-000000000101', 'select', 'SELECT', 'Базовая выборка данных', 'sql'),
+('00000000-0000-0000-0000-000000000102', 'where', 'WHERE', 'Фильтрация строк', 'sql'),
+('00000000-0000-0000-0000-000000000103', 'order_by', 'ORDER BY', 'Сортировка результата', 'sql'),
+('00000000-0000-0000-0000-000000000104', 'group_by', 'GROUP BY', 'Группировка данных', 'sql'),
+('00000000-0000-0000-0000-000000000105', 'aggregate_functions', 'Агрегатные функции', 'COUNT, SUM, AVG, MIN, MAX', 'sql'),
+('00000000-0000-0000-0000-000000000106', 'having', 'HAVING', 'Фильтрация групп', 'sql'),
+('00000000-0000-0000-0000-000000000107', 'inner_join', 'INNER JOIN', 'Соединение таблиц', 'sql'),
+('00000000-0000-0000-0000-000000000108', 'left_join', 'LEFT JOIN', 'Внешние соединения', 'sql'),
+('00000000-0000-0000-0000-000000000109', 'subquery', 'Подзапросы', 'Подзапросы IN, EXISTS, scalar subquery', 'sql'),
+('00000000-0000-0000-0000-000000000110', 'cte', 'CTE', 'WITH и декомпозиция сложных запросов', 'sql'),
+('00000000-0000-0000-0000-000000000111', 'window_functions', 'Оконные функции', 'OVER, PARTITION BY, ORDER BY', 'da'),
+('00000000-0000-0000-0000-000000000112', 'indexes', 'Индексы', 'Основы индексов и планов выполнения', 'di'),
+('00000000-0000-0000-0000-000000000113', 'transactions', 'Транзакции', 'ACID, COMMIT, ROLLBACK', 'di'),
+('00000000-0000-0000-0000-000000000114', 'etl_loading', 'ETL-загрузка', 'INSERT SELECT и загрузка данных', 'di')
+ON CONFLICT (code) DO NOTHING;
+
+INSERT INTO learning_graphs (id, code, name, description, is_active) VALUES
+('00000000-0000-0000-0000-000000001001', 'core_sql', 'Базовый SQL', 'Основная траектория SQL без профессионального уклона', true),
+('00000000-0000-0000-0000-000000001002', 'DA', 'Data Analytics', 'Траектория с усилением аналитических навыков: агрегации, CTE, оконные функции', true),
+('00000000-0000-0000-0000-000000001003', 'DI', 'Data Integration', 'Траектория с усилением инженерных навыков: CTE, транзакции, индексы, ETL', true)
+ON CONFLICT (code) DO NOTHING;
+
+INSERT INTO graph_skills (graph_id, skill_id, position, is_required, priority_weight) VALUES
+('00000000-0000-0000-0000-000000001001', '00000000-0000-0000-0000-000000000101', 1, true, 1.0),
+('00000000-0000-0000-0000-000000001001', '00000000-0000-0000-0000-000000000102', 2, true, 1.0),
+('00000000-0000-0000-0000-000000001001', '00000000-0000-0000-0000-000000000103', 3, true, 0.8),
+('00000000-0000-0000-0000-000000001001', '00000000-0000-0000-0000-000000000104', 4, true, 1.0),
+('00000000-0000-0000-0000-000000001001', '00000000-0000-0000-0000-000000000105', 5, true, 1.0),
+('00000000-0000-0000-0000-000000001001', '00000000-0000-0000-0000-000000000106', 6, true, 0.9),
+('00000000-0000-0000-0000-000000001001', '00000000-0000-0000-0000-000000000107', 7, true, 1.0),
+('00000000-0000-0000-0000-000000001001', '00000000-0000-0000-0000-000000000108', 8, true, 0.9),
+('00000000-0000-0000-0000-000000001001', '00000000-0000-0000-0000-000000000109', 9, true, 0.9),
+('00000000-0000-0000-0000-000000001001', '00000000-0000-0000-0000-000000000110', 10, false, 0.7),
+
+('00000000-0000-0000-0000-000000001002', '00000000-0000-0000-0000-000000000101', 1, true, 1.0),
+('00000000-0000-0000-0000-000000001002', '00000000-0000-0000-0000-000000000102', 2, true, 1.0),
+('00000000-0000-0000-0000-000000001002', '00000000-0000-0000-0000-000000000104', 3, true, 1.2),
+('00000000-0000-0000-0000-000000001002', '00000000-0000-0000-0000-000000000105', 4, true, 1.2),
+('00000000-0000-0000-0000-000000001002', '00000000-0000-0000-0000-000000000106', 5, true, 1.0),
+('00000000-0000-0000-0000-000000001002', '00000000-0000-0000-0000-000000000107', 6, true, 0.9),
+('00000000-0000-0000-0000-000000001002', '00000000-0000-0000-0000-000000000110', 7, true, 1.1),
+('00000000-0000-0000-0000-000000001002', '00000000-0000-0000-0000-000000000111', 8, true, 1.4),
+
+('00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000000101', 1, true, 1.0),
+('00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000000102', 2, true, 0.9),
+('00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000000107', 3, true, 1.1),
+('00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000000108', 4, true, 1.0),
+('00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000000110', 5, true, 1.2),
+('00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000000112', 6, true, 1.3),
+('00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000000113', 7, true, 1.3),
+('00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000000114', 8, true, 1.4)
+ON CONFLICT (graph_id, skill_id) DO NOTHING;
+
+-- Граф-специфичные пороги mastery_threshold задают, какого уровня освоения
+-- достаточно для навыка именно в этой траектории. Например, для DA выше порог
+-- по аналитическим конструкциям, а для DI выше порог по инженерным навыкам.
+UPDATE graph_skills
+SET mastery_threshold = CASE
+    WHEN graph_id = '00000000-0000-0000-0000-000000001001' AND skill_id IN ('00000000-0000-0000-0000-000000000101', '00000000-0000-0000-0000-000000000102') THEN 0.65
+    WHEN graph_id = '00000000-0000-0000-0000-000000001001' AND skill_id = '00000000-0000-0000-0000-000000000103' THEN 0.60
+    WHEN graph_id = '00000000-0000-0000-0000-000000001001' AND skill_id IN ('00000000-0000-0000-0000-000000000104', '00000000-0000-0000-0000-000000000105', '00000000-0000-0000-0000-000000000106', '00000000-0000-0000-0000-000000000107', '00000000-0000-0000-0000-000000000108') THEN 0.70
+    WHEN graph_id = '00000000-0000-0000-0000-000000001001' THEN 0.75
+
+    WHEN graph_id = '00000000-0000-0000-0000-000000001002' AND skill_id IN ('00000000-0000-0000-0000-000000000101', '00000000-0000-0000-0000-000000000102') THEN 0.65
+    WHEN graph_id = '00000000-0000-0000-0000-000000001002' AND skill_id = '00000000-0000-0000-0000-000000000107' THEN 0.70
+    WHEN graph_id = '00000000-0000-0000-0000-000000001002' AND skill_id = '00000000-0000-0000-0000-000000000106' THEN 0.75
+    WHEN graph_id = '00000000-0000-0000-0000-000000001002' AND skill_id IN ('00000000-0000-0000-0000-000000000104', '00000000-0000-0000-0000-000000000105', '00000000-0000-0000-0000-000000000110') THEN 0.80
+    WHEN graph_id = '00000000-0000-0000-0000-000000001002' AND skill_id = '00000000-0000-0000-0000-000000000111' THEN 0.85
+
+    WHEN graph_id = '00000000-0000-0000-0000-000000001003' AND skill_id IN ('00000000-0000-0000-0000-000000000101', '00000000-0000-0000-0000-000000000102') THEN 0.65
+    WHEN graph_id = '00000000-0000-0000-0000-000000001003' AND skill_id IN ('00000000-0000-0000-0000-000000000107', '00000000-0000-0000-0000-000000000108') THEN 0.75
+    WHEN graph_id = '00000000-0000-0000-0000-000000001003' AND skill_id IN ('00000000-0000-0000-0000-000000000110', '00000000-0000-0000-0000-000000000112', '00000000-0000-0000-0000-000000000113') THEN 0.80
+    WHEN graph_id = '00000000-0000-0000-0000-000000001003' AND skill_id = '00000000-0000-0000-0000-000000000114' THEN 0.85
+    ELSE mastery_threshold
+END;
+
+INSERT INTO skill_dependencies (graph_id, skill_id, depends_on_skill_id, strength) VALUES
+('00000000-0000-0000-0000-000000001001', '00000000-0000-0000-0000-000000000102', '00000000-0000-0000-0000-000000000101', 1.0),
+('00000000-0000-0000-0000-000000001001', '00000000-0000-0000-0000-000000000103', '00000000-0000-0000-0000-000000000101', 0.8),
+('00000000-0000-0000-0000-000000001001', '00000000-0000-0000-0000-000000000104', '00000000-0000-0000-0000-000000000101', 1.0),
+('00000000-0000-0000-0000-000000001001', '00000000-0000-0000-0000-000000000105', '00000000-0000-0000-0000-000000000104', 0.8),
+('00000000-0000-0000-0000-000000001001', '00000000-0000-0000-0000-000000000106', '00000000-0000-0000-0000-000000000104', 1.0),
+('00000000-0000-0000-0000-000000001001', '00000000-0000-0000-0000-000000000107', '00000000-0000-0000-0000-000000000101', 1.0),
+('00000000-0000-0000-0000-000000001001', '00000000-0000-0000-0000-000000000108', '00000000-0000-0000-0000-000000000107', 0.8),
+('00000000-0000-0000-0000-000000001001', '00000000-0000-0000-0000-000000000109', '00000000-0000-0000-0000-000000000102', 1.0),
+('00000000-0000-0000-0000-000000001001', '00000000-0000-0000-0000-000000000110', '00000000-0000-0000-0000-000000000107', 0.8),
+
+('00000000-0000-0000-0000-000000001002', '00000000-0000-0000-0000-000000000102', '00000000-0000-0000-0000-000000000101', 1.0),
+('00000000-0000-0000-0000-000000001002', '00000000-0000-0000-0000-000000000104', '00000000-0000-0000-0000-000000000101', 1.0),
+('00000000-0000-0000-0000-000000001002', '00000000-0000-0000-0000-000000000105', '00000000-0000-0000-0000-000000000104', 0.8),
+('00000000-0000-0000-0000-000000001002', '00000000-0000-0000-0000-000000000106', '00000000-0000-0000-0000-000000000104', 1.0),
+('00000000-0000-0000-0000-000000001002', '00000000-0000-0000-0000-000000000107', '00000000-0000-0000-0000-000000000101', 1.0),
+('00000000-0000-0000-0000-000000001002', '00000000-0000-0000-0000-000000000110', '00000000-0000-0000-0000-000000000107', 0.8),
+('00000000-0000-0000-0000-000000001002', '00000000-0000-0000-0000-000000000111', '00000000-0000-0000-0000-000000000104', 1.0),
+
+('00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000000102', '00000000-0000-0000-0000-000000000101', 1.0),
+('00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000000107', '00000000-0000-0000-0000-000000000101', 1.0),
+('00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000000108', '00000000-0000-0000-0000-000000000107', 0.8),
+('00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000000110', '00000000-0000-0000-0000-000000000107', 0.8),
+('00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000000112', '00000000-0000-0000-0000-000000000107', 1.0),
+('00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000000113', '00000000-0000-0000-0000-000000000102', 1.0),
+('00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000000114', '00000000-0000-0000-0000-000000000113', 0.8)
+ON CONFLICT (graph_id, skill_id, depends_on_skill_id) DO NOTHING;
+
+INSERT INTO tasks (id, title, description, difficulty, reference_sql, dataset_id, is_active) VALUES
+('00000000-0000-0000-0000-000000010001', 'Выборка всех сотрудников', 'Выведите id и name всех сотрудников из таблицы task_data.employees.', 'easy', 'SELECT id, name FROM task_data.employees ORDER BY id;', NULL, true),
+('00000000-0000-0000-0000-000000010002', 'Фильтрация по отделу', 'Выведите сотрудников из отдела Engineering.', 'easy', 'SELECT id, name FROM task_data.employees WHERE department = ''Engineering'' ORDER BY id;', NULL, true),
+('00000000-0000-0000-0000-000000010003', 'Сортировка по зарплате', 'Выведите сотрудников, отсортированных по salary по убыванию.', 'easy', 'SELECT id, name, salary FROM task_data.employees ORDER BY salary DESC;', NULL, true),
+('00000000-0000-0000-0000-000000010004', 'Количество сотрудников по отделам', 'Посчитайте количество сотрудников в каждом отделе.', 'medium', 'SELECT department, COUNT(*) AS employee_count FROM task_data.employees GROUP BY department ORDER BY department;', NULL, true),
+('00000000-0000-0000-0000-000000010005', 'Средняя зарплата по отделам', 'Найдите отделы со средней зарплатой выше 100000.', 'medium', 'SELECT department, AVG(salary) AS avg_salary FROM task_data.employees GROUP BY department HAVING AVG(salary) > 100000 ORDER BY department;', NULL, true),
+('00000000-0000-0000-0000-000000010006', 'Заказы и клиенты', 'Выведите заказы вместе с именами клиентов.', 'medium', 'SELECT o.id, c.name, o.total FROM task_data.orders o INNER JOIN task_data.customers c ON c.id = o.customer_id ORDER BY o.id;', NULL, true),
+('00000000-0000-0000-0000-000000010007', 'Клиенты без заказов', 'Выведите всех клиентов и id их заказов, включая клиентов без заказов.', 'medium', 'SELECT c.id, c.name, o.id AS order_id FROM task_data.customers c LEFT JOIN task_data.orders o ON o.customer_id = c.id ORDER BY c.id, o.id;', NULL, true),
+('00000000-0000-0000-0000-000000010008', 'Подзапрос с EXISTS', 'Найдите клиентов, у которых есть хотя бы один заказ дороже 5000.', 'medium', 'SELECT c.id, c.name FROM task_data.customers c WHERE EXISTS (SELECT 1 FROM task_data.orders o WHERE o.customer_id = c.id AND o.total > 5000) ORDER BY c.id;', NULL, true),
+('00000000-0000-0000-0000-000000010009', 'CTE для аналитики', 'Через CTE посчитайте сумму заказов по клиентам.', 'hard', 'WITH totals AS (SELECT customer_id, SUM(total) AS total_sum FROM task_data.orders GROUP BY customer_id) SELECT c.name, t.total_sum FROM totals t JOIN task_data.customers c ON c.id = t.customer_id ORDER BY c.name;', NULL, true),
+('00000000-0000-0000-0000-000000010010', 'Оконная функция', 'Выведите сотрудников и их ранг по зарплате внутри отдела.', 'hard', 'SELECT department, name, salary, RANK() OVER (PARTITION BY department ORDER BY salary DESC) AS salary_rank FROM task_data.employees ORDER BY department, salary_rank, name;', NULL, true),
+('00000000-0000-0000-0000-000000010011', 'Выбор индекса', 'Определите, какие поля подходят для индексации в поиске заказов по customer_id.', 'hard', 'SELECT customer_id, COUNT(*) FROM task_data.orders GROUP BY customer_id ORDER BY customer_id;', NULL, true),
+('00000000-0000-0000-0000-000000010012', 'ETL insert select', 'Создайте агрегированную таблицу в своей схеме через INSERT SELECT.', 'hard', 'SELECT customer_id, SUM(total) AS total_sum FROM task_data.orders GROUP BY customer_id ORDER BY customer_id;', NULL, true)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO task_skills (task_id, skill_id, weight) VALUES
+('00000000-0000-0000-0000-000000010001', '00000000-0000-0000-0000-000000000101', 1.0),
+('00000000-0000-0000-0000-000000010002', '00000000-0000-0000-0000-000000000101', 0.4),
+('00000000-0000-0000-0000-000000010002', '00000000-0000-0000-0000-000000000102', 1.0),
+('00000000-0000-0000-0000-000000010003', '00000000-0000-0000-0000-000000000101', 0.3),
+('00000000-0000-0000-0000-000000010003', '00000000-0000-0000-0000-000000000103', 1.0),
+('00000000-0000-0000-0000-000000010004', '00000000-0000-0000-0000-000000000104', 0.9),
+('00000000-0000-0000-0000-000000010004', '00000000-0000-0000-0000-000000000105', 1.0),
+('00000000-0000-0000-0000-000000010005', '00000000-0000-0000-0000-000000000104', 0.6),
+('00000000-0000-0000-0000-000000010005', '00000000-0000-0000-0000-000000000105', 0.8),
+('00000000-0000-0000-0000-000000010005', '00000000-0000-0000-0000-000000000106', 1.0),
+('00000000-0000-0000-0000-000000010006', '00000000-0000-0000-0000-000000000107', 1.0),
+('00000000-0000-0000-0000-000000010007', '00000000-0000-0000-0000-000000000108', 1.0),
+('00000000-0000-0000-0000-000000010008', '00000000-0000-0000-0000-000000000109', 1.0),
+('00000000-0000-0000-0000-000000010008', '00000000-0000-0000-0000-000000000102', 0.4),
+('00000000-0000-0000-0000-000000010009', '00000000-0000-0000-0000-000000000110', 1.0),
+('00000000-0000-0000-0000-000000010009', '00000000-0000-0000-0000-000000000107', 0.5),
+('00000000-0000-0000-0000-000000010010', '00000000-0000-0000-0000-000000000111', 1.0),
+('00000000-0000-0000-0000-000000010010', '00000000-0000-0000-0000-000000000104', 0.4),
+('00000000-0000-0000-0000-000000010011', '00000000-0000-0000-0000-000000000112', 1.0),
+('00000000-0000-0000-0000-000000010011', '00000000-0000-0000-0000-000000000107', 0.3),
+('00000000-0000-0000-0000-000000010012', '00000000-0000-0000-0000-000000000114', 1.0),
+('00000000-0000-0000-0000-000000010012', '00000000-0000-0000-0000-000000000113', 0.5)
+ON CONFLICT (task_id, skill_id) DO NOTHING;
+ALTER TABLE graph_skills
+ADD COLUMN IF NOT EXISTS mastery_threshold NUMERIC(6, 4) NOT NULL DEFAULT 0.70 CHECK (mastery_threshold > 0 AND mastery_threshold <= 1);
+
+ALTER TABLE skill_dependencies
+ADD COLUMN IF NOT EXISTS required_mastery NUMERIC(6, 4) CHECK (required_mastery IS NULL OR (required_mastery > 0 AND required_mastery <= 1));
+
+UPDATE graph_skills
+SET mastery_threshold = CASE
+    WHEN graph_id = '00000000-0000-0000-0000-000000001001' AND skill_id IN ('00000000-0000-0000-0000-000000000101', '00000000-0000-0000-0000-000000000102') THEN 0.65
+    WHEN graph_id = '00000000-0000-0000-0000-000000001001' AND skill_id = '00000000-0000-0000-0000-000000000103' THEN 0.60
+    WHEN graph_id = '00000000-0000-0000-0000-000000001001' AND skill_id IN ('00000000-0000-0000-0000-000000000104', '00000000-0000-0000-0000-000000000105', '00000000-0000-0000-0000-000000000106', '00000000-0000-0000-0000-000000000107', '00000000-0000-0000-0000-000000000108') THEN 0.70
+    WHEN graph_id = '00000000-0000-0000-0000-000000001001' THEN 0.75
+
+    WHEN graph_id = '00000000-0000-0000-0000-000000001002' AND skill_id IN ('00000000-0000-0000-0000-000000000101', '00000000-0000-0000-0000-000000000102') THEN 0.65
+    WHEN graph_id = '00000000-0000-0000-0000-000000001002' AND skill_id = '00000000-0000-0000-0000-000000000107' THEN 0.70
+    WHEN graph_id = '00000000-0000-0000-0000-000000001002' AND skill_id = '00000000-0000-0000-0000-000000000106' THEN 0.75
+    WHEN graph_id = '00000000-0000-0000-0000-000000001002' AND skill_id IN ('00000000-0000-0000-0000-000000000104', '00000000-0000-0000-0000-000000000105', '00000000-0000-0000-0000-000000000110') THEN 0.80
+    WHEN graph_id = '00000000-0000-0000-0000-000000001002' AND skill_id = '00000000-0000-0000-0000-000000000111' THEN 0.85
+
+    WHEN graph_id = '00000000-0000-0000-0000-000000001003' AND skill_id IN ('00000000-0000-0000-0000-000000000101', '00000000-0000-0000-0000-000000000102') THEN 0.65
+    WHEN graph_id = '00000000-0000-0000-0000-000000001003' AND skill_id IN ('00000000-0000-0000-0000-000000000107', '00000000-0000-0000-0000-000000000108') THEN 0.75
+    WHEN graph_id = '00000000-0000-0000-0000-000000001003' AND skill_id IN ('00000000-0000-0000-0000-000000000110', '00000000-0000-0000-0000-000000000112', '00000000-0000-0000-0000-000000000113') THEN 0.80
+    WHEN graph_id = '00000000-0000-0000-0000-000000001003' AND skill_id = '00000000-0000-0000-0000-000000000114' THEN 0.85
+    ELSE mastery_threshold
+END;
+CREATE TABLE IF NOT EXISTS user_graph_skill_overrides (
+    user_id UUID NOT NULL,
+    graph_id UUID NOT NULL REFERENCES learning_graphs(id) ON DELETE CASCADE,
+    skill_id UUID NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+    position INT,
+    is_required BOOLEAN,
+    priority_weight NUMERIC(6, 3) CHECK (priority_weight IS NULL OR priority_weight >= 0),
+    mastery_threshold NUMERIC(6, 4) CHECK (mastery_threshold IS NULL OR (mastery_threshold > 0 AND mastery_threshold <= 1)),
+    reason TEXT,
+    source_event_id UUID,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, graph_id, skill_id)
+);
+
+CREATE TABLE IF NOT EXISTS user_skill_dependency_overrides (
+    user_id UUID NOT NULL,
+    graph_id UUID NOT NULL REFERENCES learning_graphs(id) ON DELETE CASCADE,
+    skill_id UUID NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+    depends_on_skill_id UUID NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+    strength NUMERIC(6, 3) CHECK (strength IS NULL OR strength > 0),
+    required_mastery NUMERIC(6, 4) CHECK (required_mastery IS NULL OR (required_mastery > 0 AND required_mastery <= 1)),
+    reason TEXT,
+    source_event_id UUID,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, graph_id, skill_id, depends_on_skill_id),
+    CHECK (skill_id <> depends_on_skill_id)
+);
+
+CREATE TABLE IF NOT EXISTS user_skill_recommendations (
+    user_id UUID NOT NULL,
+    graph_id UUID NOT NULL REFERENCES learning_graphs(id) ON DELETE CASCADE,
+    skill_id UUID NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+    priority NUMERIC(6, 4) NOT NULL CHECK (priority >= 0 AND priority <= 1),
+    recommended_action TEXT,
+    reason TEXT,
+    source_event_id UUID,
+    expires_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, graph_id, skill_id)
+);
+
+CREATE TABLE IF NOT EXISTS user_analysis_state (
+    user_id UUID PRIMARY KEY,
+    pending_task_id UUID REFERENCES tasks(id) ON DELETE SET NULL,
+    pending_attempt_id UUID,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'completed', 'expired', 'failed')),
+    pending_since TIMESTAMPTZ NOT NULL DEFAULT now(),
+    wait_until TIMESTAMPTZ,
+    source_event_id UUID,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS user_skill_assessment_versions (
+    user_id UUID NOT NULL,
+    skill_id UUID NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+    last_observed_until TIMESTAMPTZ NOT NULL,
+    last_analysis_run_id TEXT,
+    model_version TEXT,
+    prompt_version TEXT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, skill_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_skill_recommendations_user_graph ON user_skill_recommendations(user_id, graph_id, expires_at);
+CREATE INDEX IF NOT EXISTS idx_user_analysis_state_pending ON user_analysis_state(user_id, status, wait_until);
+CREATE TABLE IF NOT EXISTS user_task_hint_state (
+    user_id UUID NOT NULL,
+    task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    hint_count INT NOT NULL DEFAULT 0 CHECK (hint_count >= 0),
+    last_hint_id UUID,
+    last_hint_type TEXT,
+    last_hint_attempt_number INT CHECK (last_hint_attempt_number IS NULL OR last_hint_attempt_number > 0),
+    last_hint_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, task_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_task_hint_state_user_task ON user_task_hint_state(user_id, task_id);

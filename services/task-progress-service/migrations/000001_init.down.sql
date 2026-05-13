@@ -1,0 +1,10 @@
+DROP TABLE IF EXISTS processed_events;
+DROP TABLE IF EXISTS user_task_status;
+DROP TABLE IF EXISTS user_skills;
+DROP TABLE IF EXISTS user_learning_profiles;
+DROP TABLE IF EXISTS task_skills;
+DROP TABLE IF EXISTS tasks;
+DROP TABLE IF EXISTS skill_dependencies;
+DROP TABLE IF EXISTS graph_skills;
+DROP TABLE IF EXISTS learning_graphs;
+DROP TABLE IF EXISTS skills;

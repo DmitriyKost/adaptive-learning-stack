@@ -1,0 +1,56 @@
+# Local env / secrets
+.env
+.env.*
+!.env.example
+env/*.local
+env/*.secret
+*.pem
+*.key
+
+# Runtime data
+data/
+tmp/
+logs/
+*.log
+
+# Database / dumps
+*.db
+*.sqlite
+*.dump
+*.sql.gz
+
+# Docker / build artifacts
+dist/
+build/
+bin/
+coverage/
+*.test
+
+# Go
+vendor/
+go.work.sum
+
+# Python leftovers from external module / scripts
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Large model files must never be committed
+models/
+*.gguf
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.onnx

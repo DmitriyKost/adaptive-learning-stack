@@ -1,0 +1,24 @@
+services:
+  api-gateway:
+    build: .
+    container_name: api-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      ENV: local
+      HTTP_ADDR: :8080
+      JWT_SECRET: change-me-in-production
+      AUTH_SERVICE_URL: http://auth-service:8080
+      TASK_PROGRESS_SERVICE_URL: http://task-progress-service:8082
+      PLAYGROUND_SERVICE_URL: http://playground-service:8081
+      ANALYTICS_SERVICE_URL: http://analytics-service:8083
+      FORWARD_AUTHORIZATION: "true"
+      CHECK_DOWNSTREAM_READY: "true"
+      CORS_ALLOWED_ORIGINS: "*"
+    networks:
+      - adaptive-learning
+
+networks:
+  adaptive-learning:
+    name: adaptive-learning
+    external: true

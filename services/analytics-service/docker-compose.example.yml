@@ -1,0 +1,65 @@
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    environment:
+      CLICKHOUSE_DB: analytics
+      CLICKHOUSE_USER: analytics
+      CLICKHOUSE_PASSWORD: analytics
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:latest
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp=1
+      - --memory=512M
+      - --reserve-memory=0M
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
+    ports:
+      - "9092:9092"
+
+  analytics-service:
+    build: .
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+    environment:
+      ENV: local
+      HTTP_ADDR: :8083
+      CLICKHOUSE_ADDR: clickhouse:9000
+      CLICKHOUSE_DATABASE: analytics
+      CLICKHOUSE_USERNAME: analytics
+      CLICKHOUSE_PASSWORD: analytics
+      CLICKHOUSE_AUTO_MIGRATE: "true"
+      KAFKA_ENABLED: "true"
+      KAFKA_BROKERS: redpanda:9092
+      KAFKA_TOPIC_TASK_CHECKED: task.checked
+      KAFKA_TOPIC_TASK_COMPLETED: task.completed
+      KAFKA_TOPIC_TASK_RECOMMENDED: task.recommended
+      KAFKA_TOPIC_LEARNER_MODEL_UPDATED: learner_model.updated
+      KAFKA_TOPIC_ANALYTICS_SKILL_ASSESSMENT_UPDATED: analytics.skill_assessment.updated
+      KAFKA_TOPIC_ANALYTICS_HINT_GENERATED: analytics.hint.generated
+      INTELLIGENCE_BASE_URL: http://host.docker.internal:8090
+      INTELLIGENCE_READY_PATH: /ready
+      INTELLIGENCE_EVALUATE_PATH: /v1/assessments/evaluate
+      INTELLIGENCE_HINT_PATH: /v1/hints/generate
+      INTELLIGENCE_HTTP_TIMEOUT: 600s
+      HINT_GENERATION_TIMEOUT: 600s
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8083:8083"
