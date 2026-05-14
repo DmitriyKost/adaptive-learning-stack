@@ -55,10 +55,11 @@ func (u *PlaygroundUsecase) Execute(ctx context.Context, userID string, req doma
 		return domain.ExecuteResponse{}, err
 	}
 
-	referenceQuery, err := u.references.ReferenceQuery(ctx, req.TaskID)
+	taskReference, err := u.references.Reference(ctx, req.TaskID)
 	if err != nil {
 		return domain.ExecuteResponse{}, err
 	}
+	referenceQuery := taskReference.ReferenceSQL
 
 	executionSuccess := userResult.Error == nil
 	isCorrectValue := false
@@ -70,7 +71,7 @@ func (u *PlaygroundUsecase) Execute(ctx context.Context, userID string, req doma
 		if err != nil {
 			return domain.ExecuteResponse{}, err
 		}
-		isCorrectValue = compareExecuteResults(userResult, referenceResult)
+		isCorrectValue = compareExecuteResults(userResult, referenceResult, taskReference.OrderSensitive)
 	}
 
 	eventID, err := domain.NewUUID()

@@ -484,7 +484,7 @@ func retryAfterSeconds(waitUntil *time.Time, now time.Time, fallback int) int {
 
 func (r *Repository) ListTasks(ctx context.Context) ([]domain.Task, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT id::text, title, description, difficulty, COALESCE(reference_sql, ''), COALESCE(dataset_id::text, ''), is_active, created_at, updated_at
+		SELECT id::text, title, description, difficulty, COALESCE(reference_sql, ''), order_sensitive, COALESCE(dataset_id::text, ''), is_active, created_at, updated_at
 		FROM tasks
 		WHERE is_active = true
 		ORDER BY created_at, title`)
@@ -496,7 +496,7 @@ func (r *Repository) ListTasks(ctx context.Context) ([]domain.Task, error) {
 	var tasks []domain.Task
 	for rows.Next() {
 		var t domain.Task
-		if err := rows.Scan(&t.ID, &t.Title, &t.Description, &t.Difficulty, &t.ReferenceSQL, &t.DatasetID, &t.IsActive, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.Title, &t.Description, &t.Difficulty, &t.ReferenceSQL, &t.OrderSensitive, &t.DatasetID, &t.IsActive, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			return nil, err
 		}
 		tasks = append(tasks, t)
@@ -510,9 +510,9 @@ func (r *Repository) ListTasks(ctx context.Context) ([]domain.Task, error) {
 func (r *Repository) GetTaskByID(ctx context.Context, taskID string) (domain.Task, error) {
 	var t domain.Task
 	err := r.db.QueryRow(ctx, `
-		SELECT id::text, title, description, difficulty, COALESCE(reference_sql, ''), COALESCE(dataset_id::text, ''), is_active, created_at, updated_at
+		SELECT id::text, title, description, difficulty, COALESCE(reference_sql, ''), order_sensitive, COALESCE(dataset_id::text, ''), is_active, created_at, updated_at
 		FROM tasks
-		WHERE id = $1`, taskID).Scan(&t.ID, &t.Title, &t.Description, &t.Difficulty, &t.ReferenceSQL, &t.DatasetID, &t.IsActive, &t.CreatedAt, &t.UpdatedAt)
+		WHERE id = $1`, taskID).Scan(&t.ID, &t.Title, &t.Description, &t.Difficulty, &t.ReferenceSQL, &t.OrderSensitive, &t.DatasetID, &t.IsActive, &t.CreatedAt, &t.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Task{}, domain.ErrNotFound
 	}

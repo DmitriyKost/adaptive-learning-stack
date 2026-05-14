@@ -75,9 +75,14 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 
+type taskComparisonPolicyResponse struct {
+	OrderSensitive bool `json:"order_sensitive"`
+}
+
 type taskReferenceResponse struct {
-	TaskID       string `json:"task_id"`
-	ReferenceSQL string `json:"reference_sql"`
+	TaskID           string                       `json:"task_id"`
+	ReferenceSQL     string                       `json:"reference_sql"`
+	ComparisonPolicy taskComparisonPolicyResponse `json:"comparison_policy"`
 }
 
 func (s *Server) internalTaskReference(w http.ResponseWriter, r *http.Request) {
@@ -106,7 +111,13 @@ func (s *Server) internalTaskReference(w http.ResponseWriter, r *http.Request) {
 		writeError(w, domain.ErrNotFound)
 		return
 	}
-	writeJSON(w, http.StatusOK, taskReferenceResponse{TaskID: task.ID, ReferenceSQL: task.ReferenceSQL})
+	writeJSON(w, http.StatusOK, taskReferenceResponse{
+		TaskID:       task.ID,
+		ReferenceSQL: task.ReferenceSQL,
+		ComparisonPolicy: taskComparisonPolicyResponse{
+			OrderSensitive: task.OrderSensitive,
+		},
+	})
 }
 
 func (s *Server) tasks(w http.ResponseWriter, r *http.Request) {

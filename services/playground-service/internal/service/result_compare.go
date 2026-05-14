@@ -7,7 +7,7 @@ import (
 	"playground-service/internal/domain"
 )
 
-func compareExecuteResults(actual, expected *domain.ExecuteResult) bool {
+func compareExecuteResults(actual, expected *domain.ExecuteResult, orderSensitive bool) bool {
 	if actual == nil || expected == nil {
 		return false
 	}
@@ -29,8 +29,10 @@ func compareExecuteResults(actual, expected *domain.ExecuteResult) bool {
 	actualRows := normalizeExecuteRows(actual.Columns, actual.Rows)
 	expectedRows := normalizeExecuteRows(expected.Columns, expected.Rows)
 
-	sort.Strings(actualRows)
-	sort.Strings(expectedRows)
+	if !orderSensitive {
+		sort.Strings(actualRows)
+		sort.Strings(expectedRows)
+	}
 
 	for i := range actualRows {
 		if actualRows[i] != expectedRows[i] {

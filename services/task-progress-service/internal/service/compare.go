@@ -2,15 +2,8 @@ package service
 
 import (
 	"fmt"
-	"regexp"
 	"sort"
 )
-
-var orderByPattern = regexp.MustCompile(`(?is)\border\s+by\b`)
-
-func isOrderSensitiveReference(sql string) bool {
-	return orderByPattern.MatchString(sql)
-}
 
 func compareTabularResults(actualColumns []string, actualRows [][]any, expectedColumns []string, expectedRows [][]any, orderSensitive bool) bool {
 	if len(actualColumns) != len(expectedColumns) {

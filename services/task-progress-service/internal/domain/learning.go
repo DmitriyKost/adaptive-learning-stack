@@ -65,16 +65,17 @@ type SkillDependency struct {
 }
 
 type Task struct {
-	ID           string      `json:"id"`
-	Title        string      `json:"title"`
-	Description  string      `json:"description"`
-	Difficulty   string      `json:"difficulty"`
-	ReferenceSQL string      `json:"-"`
-	DatasetID    string      `json:"dataset_id,omitempty"`
-	IsActive     bool        `json:"is_active"`
-	Skills       []TaskSkill `json:"skills,omitempty"`
-	CreatedAt    time.Time   `json:"created_at"`
-	UpdatedAt    time.Time   `json:"updated_at"`
+	ID             string      `json:"id"`
+	Title          string      `json:"title"`
+	Description    string      `json:"description"`
+	Difficulty     string      `json:"difficulty"`
+	ReferenceSQL   string      `json:"-"`
+	OrderSensitive bool        `json:"-"`
+	DatasetID      string      `json:"dataset_id,omitempty"`
+	IsActive       bool        `json:"is_active"`
+	Skills         []TaskSkill `json:"skills,omitempty"`
+	CreatedAt      time.Time   `json:"created_at"`
+	UpdatedAt      time.Time   `json:"updated_at"`
 }
 
 type TaskSkill struct {
