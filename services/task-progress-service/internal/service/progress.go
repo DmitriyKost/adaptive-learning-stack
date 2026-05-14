@@ -79,7 +79,7 @@ func (u *ProgressUsecase) SubmitAttempt(ctx context.Context, input SubmitAttempt
 		if input.IsCorrect != nil {
 			isCorrect = *input.IsCorrect
 		} else if len(input.ExpectedColumns) > 0 || len(input.ExpectedRows) > 0 {
-			isCorrect = compareTabularResults(input.Columns, input.Rows, input.ExpectedColumns, input.ExpectedRows)
+			isCorrect = compareTabularResults(input.Columns, input.Rows, input.ExpectedColumns, input.ExpectedRows, false)
 		}
 	}
 
