@@ -16,9 +16,8 @@ type AccessClaims struct {
 }
 
 type ExecuteRequest struct {
-	TaskID         string `json:"task_id"`
-	UserQuery      string `json:"user_query"`
-	ReferenceQuery string `json:"reference_query,omitempty"`
+	TaskID    string `json:"task_id"`
+	UserQuery string `json:"user_query"`
 }
 
 type ExecuteResponse struct {
