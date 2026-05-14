@@ -54,7 +54,17 @@ func (p *Planner) NextTask(ctx context.Context, userID string) (domain.NextTaskR
 	if errors.Is(err, domain.ErrAnalysisPending) {
 		return domain.NextTaskRecommendation{}, err
 	}
-	if errors.Is(err, domain.ErrNotFound) || errors.Is(err, domain.ErrStaleAssessment) {
+	if errors.Is(err, domain.ErrNotFound) {
+		rec, computeErr := p.computeNextTask(ctx, userID, now, true)
+		if computeErr != nil {
+			return domain.NextTaskRecommendation{}, computeErr
+		}
+		if saveErr := p.repo.SaveNextTaskRecommendation(ctx, userID, rec, "", "", "", now.Add(p.nextTaskTTL())); saveErr != nil {
+			return domain.NextTaskRecommendation{}, saveErr
+		}
+		return rec, nil
+	}
+	if errors.Is(err, domain.ErrStaleAssessment) {
 		state, startErr := p.repo.StartNextTaskRefresh(ctx, userID, now, p.refreshTimeout())
 		if startErr != nil {
 			return domain.NextTaskRecommendation{}, startErr
