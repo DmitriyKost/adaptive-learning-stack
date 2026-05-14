@@ -1,0 +1,342 @@
+-- SQL task seed data.
+-- reference_sql may contain ORDER BY for deterministic expected output.
+-- order_sensitive=true means the row order is part of the task requirement.
+
+INSERT INTO tasks (
+  id,
+  title,
+  description,
+  difficulty,
+  reference_sql,
+  order_sensitive,
+  dataset_id,
+  is_active
+) VALUES
+(
+  '00000000-0000-0000-0000-000000010001',
+  'Выборка всех сотрудников',
+  'Выведите id и name всех сотрудников из таблицы task_data.employees.',
+  'easy',
+  'SELECT id, name FROM task_data.employees ORDER BY id;',
+  false,
+  NULL,
+  true
+),
+(
+  '00000000-0000-0000-0000-000000010002',
+  'Фильтрация по отделу',
+  'Выведите id и name сотрудников из отдела Engineering.',
+  'easy',
+  'SELECT id, name FROM task_data.employees WHERE department = ''Engineering'' ORDER BY id;',
+  false,
+  NULL,
+  true
+),
+(
+  '00000000-0000-0000-0000-000000010003',
+  'Сортировка по зарплате',
+  'Выведите id, name и salary сотрудников, отсортированных по salary по убыванию.',
+  'easy',
+  'SELECT id, name, salary FROM task_data.employees ORDER BY salary DESC;',
+  true,
+  NULL,
+  true
+),
+(
+  '00000000-0000-0000-0000-000000010004',
+  'Количество сотрудников по отделам',
+  'Посчитайте количество сотрудников в каждом отделе.',
+  'medium',
+  'SELECT department, COUNT(*) AS employee_count FROM task_data.employees GROUP BY department ORDER BY department;',
+  false,
+  NULL,
+  true
+),
+(
+  '00000000-0000-0000-0000-000000010005',
+  'Средняя зарплата по отделам',
+  'Найдите отделы со средней зарплатой выше 140000.',
+  'medium',
+  'SELECT department, AVG(salary) AS avg_salary FROM task_data.employees GROUP BY department HAVING AVG(salary) > 140000 ORDER BY department;',
+  false,
+  NULL,
+  true
+),
+(
+  '00000000-0000-0000-0000-000000010006',
+  'Заказы и клиенты',
+  'Выведите id заказа, имя клиента и сумму заказа.',
+  'medium',
+  'SELECT o.id, c.name, o.total FROM task_data.orders o INNER JOIN task_data.customers c ON c.id = o.customer_id ORDER BY o.id;',
+  false,
+  NULL,
+  true
+),
+(
+  '00000000-0000-0000-0000-000000010007',
+  'Клиенты и их заказы',
+  'Выведите всех клиентов и id их заказов, включая клиентов без заказов.',
+  'medium',
+  'SELECT c.id, c.name, o.id AS order_id FROM task_data.customers c LEFT JOIN task_data.orders o ON o.customer_id = c.id ORDER BY c.id, o.id;',
+  false,
+  NULL,
+  true
+),
+(
+  '00000000-0000-0000-0000-000000010008',
+  'Подзапрос с EXISTS',
+  'Найдите клиентов, у которых есть хотя бы один заказ дороже 5000.',
+  'medium',
+  'SELECT c.id, c.name FROM task_data.customers c WHERE EXISTS (SELECT 1 FROM task_data.orders o WHERE o.customer_id = c.id AND o.total > 5000) ORDER BY c.id;',
+  false,
+  NULL,
+  true
+),
+(
+  '00000000-0000-0000-0000-000000010009',
+  'CTE для суммы заказов',
+  'Через CTE посчитайте сумму заказов по клиентам и выведите имя клиента и сумму.',
+  'hard',
+  'WITH totals AS (SELECT customer_id, SUM(total) AS total_sum FROM task_data.orders GROUP BY customer_id) SELECT c.name, t.total_sum FROM totals t JOIN task_data.customers c ON c.id = t.customer_id ORDER BY c.name;',
+  false,
+  NULL,
+  true
+),
+(
+  '00000000-0000-0000-0000-000000010010',
+  'Оконная функция: ранг зарплаты',
+  'Выведите department, name, salary и ранг сотрудника по зарплате внутри отдела.',
+  'hard',
+  'SELECT department, name, salary, RANK() OVER (PARTITION BY department ORDER BY salary DESC) AS salary_rank FROM task_data.employees ORDER BY department, salary_rank, name;',
+  false,
+  NULL,
+  true
+),
+(
+  '00000000-0000-0000-0000-000000010011',
+  'Фильтрация по дате найма',
+  'Выведите id, name и hired_at сотрудников, нанятых начиная с 2022-01-01.',
+  'easy',
+  'SELECT id, name, hired_at FROM task_data.employees WHERE hired_at >= DATE ''2022-01-01'' ORDER BY hired_at, id;',
+  false,
+  NULL,
+  true
+),
+(
+  '00000000-0000-0000-0000-000000010012',
+  'Максимальная зарплата по отделам',
+  'Для каждого отдела найдите максимальную зарплату.',
+  'medium',
+  'SELECT department, MAX(salary) AS max_salary FROM task_data.employees GROUP BY department ORDER BY department;',
+  false,
+  NULL,
+  true
+),
+(
+  '00000000-0000-0000-0000-000000010013',
+  'Фильтрация заказов по сумме',
+  'Выведите id заказа, имя клиента и total для заказов дороже 5000.',
+  'medium',
+  'SELECT o.id, c.name, o.total FROM task_data.orders o INNER JOIN task_data.customers c ON c.id = o.customer_id WHERE o.total > 5000 ORDER BY o.id;',
+  false,
+  NULL,
+  true
+),
+(
+  '00000000-0000-0000-0000-000000010014',
+  'Клиенты без заказов',
+  'Найдите клиентов, у которых нет ни одного заказа.',
+  'medium',
+  'SELECT c.id, c.name FROM task_data.customers c LEFT JOIN task_data.orders o ON o.customer_id = c.id WHERE o.id IS NULL ORDER BY c.id;',
+  false,
+  NULL,
+  true
+),
+(
+  '00000000-0000-0000-0000-000000010015',
+  'Сотрудники с зарплатой выше средней',
+  'Через подзапрос выведите сотрудников с зарплатой выше средней зарплаты по компании.',
+  'medium',
+  'SELECT id, name, salary FROM task_data.employees WHERE salary > (SELECT AVG(salary) FROM task_data.employees) ORDER BY id;',
+  false,
+  NULL,
+  true
+),
+(
+  '00000000-0000-0000-0000-000000010016',
+  'CTE: средняя зарплата по отделам',
+  'Через CTE посчитайте среднюю зарплату по отделам.',
+  'medium',
+  'WITH department_avg AS (SELECT department, AVG(salary) AS avg_salary FROM task_data.employees GROUP BY department) SELECT department, avg_salary FROM department_avg ORDER BY department;',
+  false,
+  NULL,
+  true
+),
+(
+  '00000000-0000-0000-0000-000000010017',
+  'Агрегаты по зарплате отделов',
+  'Для каждого отдела выведите количество сотрудников, минимальную и максимальную зарплату.',
+  'medium',
+  'SELECT department, COUNT(*) AS employee_count, MIN(salary) AS min_salary, MAX(salary) AS max_salary FROM task_data.employees GROUP BY department ORDER BY department;',
+  false,
+  NULL,
+  true
+),
+(
+  '00000000-0000-0000-0000-000000010018',
+  'Клиенты с суммой заказов больше 10000',
+  'Найдите клиентов, у которых суммарная стоимость заказов больше 10000.',
+  'hard',
+  'SELECT c.id, c.name, SUM(o.total) AS total_sum FROM task_data.customers c INNER JOIN task_data.orders o ON o.customer_id = c.id GROUP BY c.id, c.name HAVING SUM(o.total) > 10000 ORDER BY c.id;',
+  false,
+  NULL,
+  true
+),
+(
+  '00000000-0000-0000-0000-000000010019',
+  'Лучший оплачиваемый сотрудник в каждом отделе',
+  'Используйте оконную функцию, чтобы найти сотрудника с максимальной зарплатой в каждом отделе.',
+  'hard',
+  'SELECT department, name, salary FROM (SELECT department, name, salary, ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC, id) AS rn FROM task_data.employees) ranked WHERE rn = 1 ORDER BY department;',
+  false,
+  NULL,
+  true
+),
+(
+  '00000000-0000-0000-0000-000000010020',
+  'CTE и LEFT JOIN: суммы заказов всех клиентов',
+  'Через CTE и LEFT JOIN выведите всех клиентов и сумму их заказов, включая клиентов без заказов.',
+  'hard',
+  'WITH totals AS (SELECT customer_id, SUM(total) AS total_sum FROM task_data.orders GROUP BY customer_id) SELECT c.id, c.name, COALESCE(t.total_sum, 0) AS total_sum FROM task_data.customers c LEFT JOIN totals t ON t.customer_id = c.id ORDER BY c.id;',
+  false,
+  NULL,
+  true
+),
+(
+  '00000000-0000-0000-0000-000000010021',
+  'Топ-3 зарплаты',
+  'Выведите id, name и salary трёх сотрудников с самыми высокими зарплатами в порядке убывания зарплаты.',
+  'medium',
+  'SELECT id, name, salary FROM task_data.employees ORDER BY salary DESC LIMIT 3;',
+  true,
+  NULL,
+  true
+),
+(
+  '00000000-0000-0000-0000-000000010022',
+  'Сотрудники Engineering с высокой зарплатой',
+  'Выведите сотрудников из Engineering с зарплатой выше 190000.',
+  'easy',
+  'SELECT id, name, salary FROM task_data.employees WHERE department = ''Engineering'' AND salary > 190000 ORDER BY id;',
+  false,
+  NULL,
+  true
+),
+(
+  '00000000-0000-0000-0000-000000010023',
+  'Заказы 2024 года по клиентам',
+  'Посчитайте сумму заказов по клиентам за 2024 год.',
+  'medium',
+  'SELECT customer_id, SUM(total) AS total_sum FROM task_data.orders WHERE created_at >= DATE ''2024-01-01'' AND created_at < DATE ''2025-01-01'' GROUP BY customer_id ORDER BY customer_id;',
+  false,
+  NULL,
+  true
+),
+(
+  '00000000-0000-0000-0000-000000010024',
+  'Города клиентов с заказами',
+  'Выведите города клиентов, у которых есть хотя бы один заказ.',
+  'medium',
+  'SELECT DISTINCT c.city FROM task_data.customers c INNER JOIN task_data.orders o ON o.customer_id = c.id ORDER BY c.city;',
+  false,
+  NULL,
+  true
+)
+ON CONFLICT (id) DO UPDATE SET
+  title = EXCLUDED.title,
+  description = EXCLUDED.description,
+  difficulty = EXCLUDED.difficulty,
+  reference_sql = EXCLUDED.reference_sql,
+  order_sensitive = EXCLUDED.order_sensitive,
+  dataset_id = EXCLUDED.dataset_id,
+  is_active = EXCLUDED.is_active,
+  updated_at = now();
+
+INSERT INTO task_skills (task_id, skill_id, weight) VALUES
+('00000000-0000-0000-0000-000000010001', '00000000-0000-0000-0000-000000000101', 1.0),
+
+('00000000-0000-0000-0000-000000010002', '00000000-0000-0000-0000-000000000101', 0.4),
+('00000000-0000-0000-0000-000000010002', '00000000-0000-0000-0000-000000000102', 1.0),
+
+('00000000-0000-0000-0000-000000010003', '00000000-0000-0000-0000-000000000101', 0.3),
+('00000000-0000-0000-0000-000000010003', '00000000-0000-0000-0000-000000000103', 1.0),
+
+('00000000-0000-0000-0000-000000010004', '00000000-0000-0000-0000-000000000104', 0.9),
+('00000000-0000-0000-0000-000000010004', '00000000-0000-0000-0000-000000000105', 1.0),
+
+('00000000-0000-0000-0000-000000010005', '00000000-0000-0000-0000-000000000104', 0.6),
+('00000000-0000-0000-0000-000000010005', '00000000-0000-0000-0000-000000000105', 0.8),
+('00000000-0000-0000-0000-000000010005', '00000000-0000-0000-0000-000000000106', 1.0),
+
+('00000000-0000-0000-0000-000000010006', '00000000-0000-0000-0000-000000000107', 1.0),
+
+('00000000-0000-0000-0000-000000010007', '00000000-0000-0000-0000-000000000108', 1.0),
+
+('00000000-0000-0000-0000-000000010008', '00000000-0000-0000-0000-000000000109', 1.0),
+('00000000-0000-0000-0000-000000010008', '00000000-0000-0000-0000-000000000102', 0.4),
+
+('00000000-0000-0000-0000-000000010009', '00000000-0000-0000-0000-000000000110', 1.0),
+('00000000-0000-0000-0000-000000010009', '00000000-0000-0000-0000-000000000107', 0.5),
+('00000000-0000-0000-0000-000000010009', '00000000-0000-0000-0000-000000000105', 0.4),
+
+('00000000-0000-0000-0000-000000010010', '00000000-0000-0000-0000-000000000111', 1.0),
+('00000000-0000-0000-0000-000000010010', '00000000-0000-0000-0000-000000000104', 0.4),
+
+('00000000-0000-0000-0000-000000010011', '00000000-0000-0000-0000-000000000102', 1.0),
+('00000000-0000-0000-0000-000000010011', '00000000-0000-0000-0000-000000000101', 0.3),
+
+('00000000-0000-0000-0000-000000010012', '00000000-0000-0000-0000-000000000104', 0.8),
+('00000000-0000-0000-0000-000000010012', '00000000-0000-0000-0000-000000000105', 1.0),
+
+('00000000-0000-0000-0000-000000010013', '00000000-0000-0000-0000-000000000107', 1.0),
+('00000000-0000-0000-0000-000000010013', '00000000-0000-0000-0000-000000000102', 0.6),
+
+('00000000-0000-0000-0000-000000010014', '00000000-0000-0000-0000-000000000108', 1.0),
+('00000000-0000-0000-0000-000000010014', '00000000-0000-0000-0000-000000000102', 0.5),
+
+('00000000-0000-0000-0000-000000010015', '00000000-0000-0000-0000-000000000109', 1.0),
+('00000000-0000-0000-0000-000000010015', '00000000-0000-0000-0000-000000000105', 0.5),
+
+('00000000-0000-0000-0000-000000010016', '00000000-0000-0000-0000-000000000110', 1.0),
+('00000000-0000-0000-0000-000000010016', '00000000-0000-0000-0000-000000000104', 0.6),
+('00000000-0000-0000-0000-000000010016', '00000000-0000-0000-0000-000000000105', 0.8),
+
+('00000000-0000-0000-0000-000000010017', '00000000-0000-0000-0000-000000000104', 0.9),
+('00000000-0000-0000-0000-000000010017', '00000000-0000-0000-0000-000000000105', 1.0),
+
+('00000000-0000-0000-0000-000000010018', '00000000-0000-0000-0000-000000000107', 0.6),
+('00000000-0000-0000-0000-000000010018', '00000000-0000-0000-0000-000000000104', 0.6),
+('00000000-0000-0000-0000-000000010018', '00000000-0000-0000-0000-000000000105', 0.6),
+('00000000-0000-0000-0000-000000010018', '00000000-0000-0000-0000-000000000106', 1.0),
+
+('00000000-0000-0000-0000-000000010019', '00000000-0000-0000-0000-000000000111', 1.0),
+('00000000-0000-0000-0000-000000010019', '00000000-0000-0000-0000-000000000109', 0.5),
+
+('00000000-0000-0000-0000-000000010020', '00000000-0000-0000-0000-000000000110', 0.8),
+('00000000-0000-0000-0000-000000010020', '00000000-0000-0000-0000-000000000108', 0.8),
+('00000000-0000-0000-0000-000000010020', '00000000-0000-0000-0000-000000000105', 0.8),
+
+('00000000-0000-0000-0000-000000010021', '00000000-0000-0000-0000-000000000103', 1.0),
+('00000000-0000-0000-0000-000000010021', '00000000-0000-0000-0000-000000000101', 0.4),
+
+('00000000-0000-0000-0000-000000010022', '00000000-0000-0000-0000-000000000102', 1.0),
+('00000000-0000-0000-0000-000000010022', '00000000-0000-0000-0000-000000000101', 0.4),
+
+('00000000-0000-0000-0000-000000010023', '00000000-0000-0000-0000-000000000102', 0.5),
+('00000000-0000-0000-0000-000000010023', '00000000-0000-0000-0000-000000000104', 0.7),
+('00000000-0000-0000-0000-000000010023', '00000000-0000-0000-0000-000000000105', 0.8),
+
+('00000000-0000-0000-0000-000000010024', '00000000-0000-0000-0000-000000000107', 0.7),
+('00000000-0000-0000-0000-000000010024', '00000000-0000-0000-0000-000000000101', 0.2)
+ON CONFLICT (task_id, skill_id) DO UPDATE SET
+  weight = EXCLUDED.weight;
