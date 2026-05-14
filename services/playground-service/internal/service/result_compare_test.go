@@ -47,3 +47,31 @@ func TestCompareExecuteResultsOrderSensitive(t *testing.T) {
 		t.Fatal("expected different row order not to match when orderSensitive=true")
 	}
 }
+
+func TestCompareExecuteResultsRejectsTruncatedResults(t *testing.T) {
+	expected := &domain.ExecuteResult{
+		Columns: []string{"id"},
+		Rows: []map[string]any{
+			{"id": 1},
+		},
+	}
+
+	actual := &domain.ExecuteResult{
+		Columns: []string{"id"},
+		Rows: []map[string]any{
+			{"id": 1},
+		},
+		Truncated: true,
+	}
+
+	if compareExecuteResults(actual, expected, false) {
+		t.Fatal("expected truncated actual result not to match")
+	}
+
+	actual.Truncated = false
+	expected.Truncated = true
+
+	if compareExecuteResults(actual, expected, false) {
+		t.Fatal("expected truncated expected result not to match")
+	}
+}

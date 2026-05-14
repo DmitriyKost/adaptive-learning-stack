@@ -14,6 +14,9 @@ func compareExecuteResults(actual, expected *domain.ExecuteResult, orderSensitiv
 	if actual.Error != nil || expected.Error != nil {
 		return false
 	}
+	if actual.Truncated || expected.Truncated {
+		return false
+	}
 	if len(actual.Columns) != len(expected.Columns) {
 		return false
 	}

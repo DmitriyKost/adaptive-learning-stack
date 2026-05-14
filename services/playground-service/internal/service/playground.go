@@ -45,6 +45,12 @@ func (u *PlaygroundUsecase) Execute(ctx context.Context, userID string, req doma
 		return domain.ExecuteResponse{}, domain.ErrInvalidInput
 	}
 
+	taskReference, err := u.references.Reference(ctx, req.TaskID)
+	if err != nil {
+		return domain.ExecuteResponse{}, err
+	}
+	referenceQuery := taskReference.ReferenceSQL
+
 	workspace, err := u.workspaces.EnsureWorkspace(ctx, userID)
 	if err != nil {
 		return domain.ExecuteResponse{}, err
@@ -54,12 +60,6 @@ func (u *PlaygroundUsecase) Execute(ctx context.Context, userID string, req doma
 	if err != nil {
 		return domain.ExecuteResponse{}, err
 	}
-
-	taskReference, err := u.references.Reference(ctx, req.TaskID)
-	if err != nil {
-		return domain.ExecuteResponse{}, err
-	}
-	referenceQuery := taskReference.ReferenceSQL
 
 	executionSuccess := userResult.Error == nil
 	isCorrectValue := false
