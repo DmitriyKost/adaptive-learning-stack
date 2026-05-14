@@ -9,7 +9,7 @@
 - `playground-service` — безопасное выполнение SQL пользователя и server-side автопроверка;
 - `task-progress-service` — задачи, прогресс, learner model, граф навыков, выбор следующей задачи;
 - `analytics-service` — event log, ClickHouse, подготовка контекста и интеграция с внешним intelligence service;
-- `intelligence` из внешнего модуля `diploma` — LLM/LoRA/Ollama-интеллект;
+- `intelligence` из внешнего модуля `adaptive_sql_diploma` — LLM/LoRA/Ollama-интеллект;
 - PostgreSQL для auth/playground/task-progress;
 - ClickHouse для analytics;
 - Redpanda как Kafka-compatible broker.
@@ -20,27 +20,27 @@
 
     docker compose up -d --build
 
-Запуск с внешним модулем `diploma`:
+Запуск с внешним модулем `adaptive_sql_diploma`:
 
     docker compose \
       -f docker-compose.yml \
-      -f docker-compose.with-diploma.yml \
+      -f docker-compose.with-adaptive-sql-adaptive_sql_diploma.yml \
       up -d --build
 
 Запуск с GPU override:
 
     docker compose \
       -f docker-compose.yml \
-      -f docker-compose.with-diploma.yml \
-      -f docker-compose.with-diploma.gpu.yml \
+      -f docker-compose.with-adaptive-sql-adaptive_sql_diploma.yml \
+      -f docker-compose.with-adaptive-sql-adaptive_sql_diploma.gpu.yml \
       up -d --build
 
 Полный reset dev-данных:
 
     docker compose \
       -f docker-compose.yml \
-      -f docker-compose.with-diploma.yml \
-      -f docker-compose.with-diploma.gpu.yml \
+      -f docker-compose.with-adaptive-sql-adaptive_sql_diploma.yml \
+      -f docker-compose.with-adaptive-sql-adaptive_sql_diploma.gpu.yml \
       down -v --remove-orphans
 
 ## Основной public API flow
@@ -196,7 +196,7 @@ Benchmark ожидания следующей задачи:
 
 ## Intelligence service
 
-При запуске с `docker-compose.with-diploma.yml` `analytics-service` вызывает внешний Python intelligence service:
+При запуске с `docker-compose.with-adaptive-sql-adaptive_sql_diploma.yml` `analytics-service` вызывает внешний Python intelligence service:
 
     GET  /ready
     POST /v1/assessments/evaluate

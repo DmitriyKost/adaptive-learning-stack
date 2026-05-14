@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DIPLOMA_ROOT="${DIPLOMA_ROOT:-../diploma}"
-MODEL_ID="${DIPLOMA_BASE_MODEL_ID:-unsloth/meta-llama-3.1-8b-instruct-unsloth-bnb-4bit}"
-TARGET_DIR="${DIPLOMA_MODELS_HOST:-$DIPLOMA_ROOT/models/base}"
+ADAPTIVE_SQL_DIPLOMA_ROOT="${ADAPTIVE_SQL_DIPLOMA_ROOT:-../adaptive_sql_diploma}"
+MODEL_ID="${ADAPTIVE_SQL_DIPLOMA_BASE_MODEL_ID:-unsloth/meta-llama-3.1-8b-instruct-unsloth-bnb-4bit}"
+TARGET_DIR="${ADAPTIVE_SQL_DIPLOMA_MODELS_HOST:-$ADAPTIVE_SQL_DIPLOMA_ROOT/models/base}"
 VENV_DIR="${HF_DOWNLOAD_VENV:-.venv-hf-download}"
 
 log() {

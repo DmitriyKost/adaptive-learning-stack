@@ -1,36 +1,36 @@
-# Docker Compose override: attach the external diploma intelligence module.
+# Docker Compose override: attach the external adaptive_sql_diploma intelligence module.
 #
 # Recommended local layout:
 #   workspace/
 #     adaptive-learning-stack/
-#     diploma/
+#     adaptive_sql_diploma/
 #
 # This file runs the real local Hugging Face base model + PEFT LoRA in a Docker
 # container. Ollama is not used here.
 #
 # Required host paths, usually configured in .env next to this file:
-#   DIPLOMA_ROOT        — path to the external diploma repository, default ../diploma
-#   DIPLOMA_MODELS_HOST — local Hugging Face snapshot of the base model, default ../diploma/models/base
-#   DIPLOMA_LORA_HOST   — LoRA adapter directory, default ../diploma/lora_sql_mastery
+#   ADAPTIVE_SQL_DIPLOMA_ROOT        — path to the external adaptive_sql_diploma repository, default ../adaptive_sql_diploma
+#   ADAPTIVE_SQL_DIPLOMA_MODELS_HOST — local Hugging Face snapshot of the base model, default ../adaptive_sql_diploma/models/base
+#   ADAPTIVE_SQL_DIPLOMA_LORA_HOST   — LoRA adapter directory, default ../adaptive_sql_diploma/lora_sql_mastery
 #
 # CPU run, mostly for small local models:
-#   docker compose -f docker-compose.yml -f docker-compose.with-diploma.yml up --build
+#   docker compose -f docker-compose.yml -f docker-compose.with-adaptive-sql-adaptive_sql_diploma.yml up --build
 #
 # NVIDIA GPU run for the provided Llama 3.1 8B 4-bit LoRA:
-#   docker compose -f docker-compose.yml -f docker-compose.with-diploma.yml \
-#     -f docker-compose.with-diploma.gpu.yml up --build
+#   docker compose -f docker-compose.yml -f docker-compose.with-adaptive-sql-adaptive_sql_diploma.yml \
+#     -f docker-compose.with-adaptive-sql-adaptive_sql_diploma.gpu.yml up --build
 
 services:
   intelligence:
     build:
-      context: ${DIPLOMA_ROOT:-../diploma}
+      context: ${ADAPTIVE_SQL_DIPLOMA_ROOT:-../adaptive_sql_diploma}
       dockerfile: Dockerfile
     image: adaptive-sql-intelligence:local-lora
     container_name: adaptive-sql-intelligence
     ports:
       - "${INTELLIGENCE_HOST_PORT:-8090}:8080"
     env_file:
-      - path: ${DIPLOMA_ROOT:-../diploma}/.env
+      - path: ${ADAPTIVE_SQL_DIPLOMA_ROOT:-../adaptive_sql_diploma}/.env
         required: false
     environment:
       ANALYTICS_LLM_BASE_MODEL_PATH: /app/models/base
@@ -46,9 +46,9 @@ services:
       HF_HOME: /app/.cache/huggingface
       TRANSFORMERS_CACHE: /app/.cache/huggingface/transformers
     volumes:
-      - ${DIPLOMA_MODELS_HOST:-../diploma/models/base}:/app/models/base:ro
-      - ${DIPLOMA_LORA_HOST:-../diploma/lora_sql_mastery}:/app/lora_sql_mastery:ro
-      - diploma-hf-cache:/app/.cache/huggingface
+      - ${ADAPTIVE_SQL_DIPLOMA_MODELS_HOST:-../adaptive_sql_diploma/models/base}:/app/models/base:ro
+      - ${ADAPTIVE_SQL_DIPLOMA_LORA_HOST:-../adaptive_sql_diploma/lora_sql_mastery}:/app/lora_sql_mastery:ro
+      - adaptive_sql_diploma-hf-cache:/app/.cache/huggingface
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/ready', timeout=5)\""]
       interval: 10s
@@ -74,4 +74,4 @@ services:
         condition: service_healthy
 
 volumes:
-  diploma-hf-cache:
+  adaptive_sql_diploma-hf-cache:
