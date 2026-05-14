@@ -146,9 +146,7 @@ func (s *Server) taskByID(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		taskID := strings.TrimSuffix(path, "/submit")
-		taskID = strings.Trim(taskID, "/")
-		s.submitTask(w, r, taskID)
+		writeJSON(w, http.StatusGone, errorResponse{Error: "legacy_submit_disabled"})
 		return
 	}
 
