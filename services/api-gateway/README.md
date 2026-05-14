@@ -1,197 +1,202 @@
 # api-gateway
 
-Единая точка входа для микросервисов адаптивного SQL-курса.
+Единая публичная точка входа для Adaptive Learning Stack.
 
-Gateway не хранит бизнес-данные и не ходит в БД. Он:
+Gateway:
 
-- валидирует JWT access token, выпущенный `auth-service`;
-- удаляет клиентские `X-User-ID` / `X-User-Role`, чтобы клиент не мог подменить пользователя;
-- добавляет доверенные заголовки для downstream-сервисов:
-  - `X-User-ID`;
-  - `X-User-Role`;
-  - `X-Request-ID`;
-- проксирует запросы в нужный сервис;
-- не проксирует внутренний API аналитики `/internal/hints/generate` наружу;
-- возвращает `Retry-After` от `task-progress`, когда `/tasks/next` отвечает `409 analysis_pending`.
+- валидирует JWT access token от auth-service;
+- удаляет клиентские X-User-ID и X-User-Role;
+- выставляет downstream-заголовки пользователя после проверки JWT;
+- проксирует public API в auth-service, task-progress-service, playground-service и analytics-service;
+- не является владельцем бизнес-логики задач, прогресса или SQL-проверки.
 
-## Downstream-сервисы
+## Public API
 
-```text
-auth-service          -> регистрация, login, refresh, users
-task-progress-service -> задачи, прогресс, графы, подсказка как пользовательский endpoint
-playground-service    -> выполнение SQL
-analytics-service     -> внутренние логи, агрегации, LLM, генерация подсказок
-```
+Служебные endpoints:
 
-## API
+    GET /health
+    GET /ready
 
-### Public
+Auth:
 
-```text
-GET  /health
-GET  /ready
+    POST /auth/register
+    POST /auth/login
+    POST /auth/refresh
+    POST /auth/logout
 
-POST /auth/register
-POST /auth/login
-POST /auth/refresh
-POST /auth/logout
-```
+Users:
 
-### Auth service через gateway
+    GET /users/me
+    GET /users/{id}
 
-```text
-GET /users/me
-GET /users/{id}
-```
+Tasks and progress:
 
-### Task-progress service через gateway
+    GET  /tasks
+    GET  /tasks/{id}
+    GET  /tasks/next
+    POST /tasks/{id}/hint
 
-```text
-GET  /tasks
-GET  /tasks/{id}
-GET  /tasks/next
-POST /tasks/{id}/submit
-POST /tasks/{id}/hint
+    GET /progress/me
+    GET /progress/skills
 
-GET  /progress/me
-GET  /progress/skills
+Learning graph:
 
-GET  /users/me/learning-graph
-PUT  /users/me/learning-graph
+    GET /users/me/learning-graph
+    PUT /users/me/learning-graph
 
-GET  /skills
-POST /skills                       admin only
+Skills and graphs:
 
-GET  /graphs
-POST /graphs                       admin only
-POST /graphs/{id}/skills           admin only
-POST /graphs/{id}/dependencies     admin only
-```
+    GET  /skills
+    POST /skills
 
-### Playground service через gateway
+    GET  /graphs
+    POST /graphs
+    POST /graphs/{id}/skills
+    POST /graphs/{id}/dependencies
 
-```text
-POST /execute
-POST /playground/execute
-GET  /playground/workspace
-POST /playground/reset
-```
+Playground:
 
-`workspace/reset` оставлены в маршрутах gateway как контрактный API. Если текущая версия `playground-service` их еще не реализует, gateway просто проксирует запрос, а сам сервис вернет `404` или `405`.
+    POST /playground/execute
+    GET  /playground/workspace
+    POST /playground/reset
 
-### Analytics service
+## Frontend flow
 
-Пользовательские endpoints аналитики сейчас не открываются наружу. Внутренний endpoint:
+Новый пользователь:
 
-```text
-POST /internal/hints/generate
-```
+    POST /auth/register
+    GET  /tasks/next
 
-остается доступен только для `task-progress-service` внутри сети сервисов.
+Cold-start /tasks/next должен вернуть стартовую задачу сразу:
 
-## Переменные окружения
+    HTTP/1.1 200 OK
 
-```env
-ENV=local
-HTTP_ADDR=:8080
-JWT_SECRET=change-me-in-production
-REQUEST_TIMEOUT=30s
-SHUTDOWN_TIMEOUT=10s
+После успешного submit следующая задача выбирается асинхронно:
 
-AUTH_SERVICE_URL=http://auth-service:8080
-TASK_PROGRESS_SERVICE_URL=http://task-progress-service:8082
-PLAYGROUND_SERVICE_URL=http://playground-service:8081
-ANALYTICS_SERVICE_URL=http://analytics-service:8083
+    POST /playground/execute
+    GET  /tasks/next
 
-FORWARD_AUTHORIZATION=true
-CHECK_DOWNSTREAM_READY=true
+Пока LLM-анализ ещё идёт:
 
-CORS_ALLOWED_ORIGINS=*
-CORS_ALLOWED_HEADERS=Authorization,Content-Type,X-Request-ID
-CORS_ALLOWED_METHODS=GET,POST,PUT,PATCH,DELETE,OPTIONS
-```
+    HTTP/1.1 202 Accepted
+    Retry-After: 5
 
-Важно: `JWT_SECRET` должен совпадать с `auth-service`, `task-progress-service` и `playground-service`, если downstream-сервисы сами проверяют JWT.
+Тело ответа:
 
-Если downstream-сервисам разрешено доверять gateway headers, включи у них:
+    {
+      "status": "pending",
+      "error": "analysis_pending",
+      "retry_after_seconds": 5,
+      "analysis_state": {
+        "status": "pending"
+      }
+    }
 
-```env
-ALLOW_GATEWAY_HEADERS=true             # task-progress-service
-TRUSTED_GATEWAY_HEADERS=true           # playground-service, если поддерживается этой версией
-```
+Когда следующая задача готова:
 
-При этом gateway все равно может оставлять `Authorization` через `FORWARD_AUTHORIZATION=true`.
+    HTTP/1.1 200 OK
 
-## Запуск локально
+    {
+      "task": {
+        "id": "...",
+        "title": "...",
+        "description": "...",
+        "difficulty": "easy",
+        "skills": [
+          {
+            "skill_code": "select",
+            "weight": 1
+          }
+        ]
+      },
+      "reason": "...",
+      "score": 1.23,
+      "graph_code": "core_sql",
+      "professional_track": "core",
+      "repeat_mode": false,
+      "recommended_skills": []
+    }
 
-```bash
-go test ./...
-go run ./main.go
-```
+## Playground execute contract
 
-## Примеры
+Единственный public submit path:
 
-Регистрация:
+    POST /playground/execute
 
-```bash
-curl -X POST http://localhost:8080/auth/register \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"student@example.com","password":"strongpass123"}'
-```
+Request:
 
-Login:
+    {
+      "task_id": "00000000-0000-0000-0000-000000010001",
+      "user_query": "SELECT id, name FROM task_data.employees ORDER BY id;"
+    }
 
-```bash
-curl -X POST http://localhost:8080/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"student@example.com","password":"strongpass123"}'
-```
+Клиент не передаёт reference_query. Неизвестные поля отклоняются.
 
-Получить следующую задачу:
+Response:
 
-```bash
-curl http://localhost:8080/tasks/next \
-  -H "Authorization: Bearer $ACCESS_TOKEN"
-```
+    {
+      "event_id": "...",
+      "user_id": "...",
+      "task_id": "...",
+      "execution_success": true,
+      "is_correct": true,
+      "user_result": {
+        "columns": ["id", "name"],
+        "rows": [
+          {
+            "id": 1,
+            "name": "Ivan"
+          }
+        ],
+        "rows_affected": 1,
+        "query_time_ms": 2,
+        "truncated": false
+      },
+      "created_at": "..."
+    }
 
-Если `task-progress` ожидает ответ analytics/LLM после успешного решения, gateway вернет ответ downstream-сервиса:
+Public response не содержит reference_sql и не содержит reference_result.
 
-```json
-{
-  "error": "analysis_pending",
-  "pending_task_id": "...",
-  "pending_attempt_id": "...",
-  "pending_since": "...",
-  "wait_until": "...",
-  "retry_after_seconds": 5,
-  "analysis_state": {
-    "status": "pending"
-  }
-}
-```
+## Disabled legacy endpoint
 
-Запросить подсказку после первого submit:
+Старый endpoint отключён:
 
-```bash
-curl -X POST http://localhost:8080/tasks/$TASK_ID/hint \
-  -H "Authorization: Bearer $ACCESS_TOKEN"
-```
+    POST /tasks/{id}/submit
 
-Выполнить SQL в playground:
+Ожидаемый ответ:
 
-```bash
-curl -X POST http://localhost:8080/execute \
-  -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "task_id":"00000000-0000-0000-0000-000000010001",
-    "dataset_id":"default",
-    "sql":"SELECT * FROM task_data.products"
-  }'
-```
+    HTTP/1.1 410 Gone
 
-## Безопасность
+    {
+      "error": "legacy_submit_disabled"
+    }
 
-Клиент не должен передавать `X-User-ID` и `X-User-Role`. Gateway всегда удаляет эти заголовки и выставляет их заново на основе валидного JWT.
+Frontend не должен использовать этот endpoint.
 
-Reference graphs не изменяются analytics/LLM через gateway. Админские изменения графов проходят только через admin-protected endpoints `POST /graphs`, `POST /graphs/{id}/skills`, `POST /graphs/{id}/dependencies`.
+## Environment
+
+    ENV=local
+    HTTP_ADDR=:8080
+    JWT_SECRET=change-me-in-production
+    REQUEST_TIMEOUT=30s
+    SHUTDOWN_TIMEOUT=10s
+
+    AUTH_SERVICE_URL=http://auth-service:8080
+    TASK_PROGRESS_SERVICE_URL=http://task-progress-service:8082
+    PLAYGROUND_SERVICE_URL=http://playground-service:8080
+    ANALYTICS_SERVICE_URL=http://analytics-service:8083
+
+    FORWARD_AUTHORIZATION=true
+    CHECK_DOWNSTREAM_READY=true
+
+    CORS_ALLOWED_ORIGINS=*
+    CORS_ALLOWED_HEADERS=Authorization,Content-Type,X-Request-ID
+    CORS_ALLOWED_METHODS=GET,POST,PUT,PATCH,DELETE,OPTIONS
+
+JWT_SECRET должен совпадать между сервисами, которые валидируют JWT самостоятельно.
+
+## Security boundary
+
+Клиентские X-User-ID и X-User-Role не являются доверенными. Gateway удаляет их и выставляет заново после JWT validation.
+
+Internal endpoints вида /internal/... не являются public API gateway.
