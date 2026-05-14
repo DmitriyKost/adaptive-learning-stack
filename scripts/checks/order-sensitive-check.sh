@@ -1,88 +1,70 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE="${BASE:-http://localhost:8080}"
-PASSWORD="${PASSWORD:-password123}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../lib/e2e-common.sh"
 
 ORDER_TASK_ID="${ORDER_TASK_ID:-00000000-0000-0000-0000-000000010003}"
 
-fail() {
-  echo "FAIL: $*" >&2
-  exit 1
-}
+need_base_tools
+check_readiness
 
-ok() {
-  echo "OK: $*"
-}
+log "Checking internal comparison policy if internal port is available"
 
-EMAIL="student+order-sensitive-$(date +%s)@example.com"
+if curl -fsS "http://localhost:8083/internal/tasks/$ORDER_TASK_ID/reference" >/tmp/order-policy.json 2>/dev/null; then
+  cat /tmp/order-policy.json | jq .
+  POLICY="$(cat /tmp/order-policy.json | jq -r '.comparison_policy.order_sensitive')"
+  [[ "$POLICY" == "true" ]] || fail "ORDER task should have order_sensitive=true"
+  ok "internal policy order_sensitive=true"
+else
+  warn "internal task-progress endpoint is not available from host; skipping direct policy check"
+fi
+rm -f /tmp/order-policy.json
 
-REGISTER_RESPONSE=$(curl -fsS -X POST "$BASE/auth/register" \
-  -H 'Content-Type: application/json' \
-  -d "{\"email\":\"$EMAIL\",\"password\":\"$PASSWORD\"}")
+register_student "student+order-sensitive"
 
-TOKEN=$(printf '%s' "$REGISTER_RESPONSE" | jq -r '.access_token')
-USER_ID=$(printf '%s' "$REGISTER_RESPONSE" | jq -r '.user.id')
+log "Bad ORDER BY should be incorrect"
 
-echo "USER_ID=$USER_ID"
-
-echo
-echo "==> Bad ORDER BY should be incorrect"
-
-BAD_RESPONSE=$(curl -fsS -X POST "$BASE/playground/execute" \
+BAD_RESPONSE="$(curl -fsS -X POST "$BASE/playground/execute" \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
-  -d "{
-    \"task_id\": \"$ORDER_TASK_ID\",
-    \"user_query\": \"SELECT id, name, salary FROM task_data.employees ORDER BY id;\"
-  }")
+  -d "$(jq -nc \
+    --arg task_id "$ORDER_TASK_ID" \
+    --arg user_query "SELECT id, name, salary FROM task_data.employees ORDER BY id;" \
+    '{task_id:$task_id,user_query:$user_query}')")"
 
 printf '%s\n' "$BAD_RESPONSE" | jq '{
   execution_success,
   is_correct,
   has_reference_result: has("reference_result"),
-  columns: .user_result.columns,
   rows: .user_result.rows
 }'
 
-BAD_EXECUTION_SUCCESS=$(printf '%s\n' "$BAD_RESPONSE" | jq -r '.execution_success')
-BAD_IS_CORRECT=$(printf '%s\n' "$BAD_RESPONSE" | jq -r '.is_correct')
-BAD_HAS_REFERENCE=$(printf '%s\n' "$BAD_RESPONSE" | jq -r 'has("reference_result")')
-
-[[ "$BAD_EXECUTION_SUCCESS" == "true" ]] || fail "bad order query did not execute successfully"
-[[ "$BAD_IS_CORRECT" == "false" ]] || fail "bad order query was incorrectly accepted"
-[[ "$BAD_HAS_REFERENCE" == "false" ]] || fail "bad response leaked reference_result"
+[[ "$(printf '%s\n' "$BAD_RESPONSE" | jq -r '.execution_success')" == "true" ]] || fail "bad order query did not execute"
+[[ "$(printf '%s\n' "$BAD_RESPONSE" | jq -r '.is_correct')" == "false" ]] || fail "bad order query was accepted"
+[[ "$(printf '%s\n' "$BAD_RESPONSE" | jq -r 'has("reference_result")')" == "false" ]] || fail "bad order response leaked reference_result"
 
 ok "bad ORDER BY rejected"
 
-echo
-echo "==> Correct ORDER BY should be correct"
+log "Correct ORDER BY should be correct"
 
-GOOD_RESPONSE=$(curl -fsS -X POST "$BASE/playground/execute" \
+GOOD_RESPONSE="$(curl -fsS -X POST "$BASE/playground/execute" \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
-  -d "{
-    \"task_id\": \"$ORDER_TASK_ID\",
-    \"user_query\": \"SELECT id, name, salary FROM task_data.employees ORDER BY salary DESC;\"
-  }")
+  -d "$(jq -nc \
+    --arg task_id "$ORDER_TASK_ID" \
+    --arg user_query "SELECT id, name, salary FROM task_data.employees ORDER BY salary DESC;" \
+    '{task_id:$task_id,user_query:$user_query}')")"
 
 printf '%s\n' "$GOOD_RESPONSE" | jq '{
   execution_success,
   is_correct,
   has_reference_result: has("reference_result"),
-  columns: .user_result.columns,
   rows: .user_result.rows
 }'
 
-GOOD_EXECUTION_SUCCESS=$(printf '%s\n' "$GOOD_RESPONSE" | jq -r '.execution_success')
-GOOD_IS_CORRECT=$(printf '%s\n' "$GOOD_RESPONSE" | jq -r '.is_correct')
-GOOD_HAS_REFERENCE=$(printf '%s\n' "$GOOD_RESPONSE" | jq -r 'has("reference_result")')
+[[ "$(printf '%s\n' "$GOOD_RESPONSE" | jq -r '.execution_success')" == "true" ]] || fail "good order query did not execute"
+[[ "$(printf '%s\n' "$GOOD_RESPONSE" | jq -r '.is_correct')" == "true" ]] || fail "good order query was not accepted"
+[[ "$(printf '%s\n' "$GOOD_RESPONSE" | jq -r 'has("reference_result")')" == "false" ]] || fail "good order response leaked reference_result"
 
-[[ "$GOOD_EXECUTION_SUCCESS" == "true" ]] || fail "good order query did not execute successfully"
-[[ "$GOOD_IS_CORRECT" == "true" ]] || fail "good order query was not accepted"
-[[ "$GOOD_HAS_REFERENCE" == "false" ]] || fail "good response leaked reference_result"
-
-ok "correct ORDER BY accepted"
-
-echo
 ok "order-sensitive integration check passed"

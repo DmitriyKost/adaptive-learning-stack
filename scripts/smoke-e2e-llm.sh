@@ -487,11 +487,10 @@ FROM user_next_task_recommendations
 WHERE user_id = '$USER_ID'::uuid;
 "
 
-log "Proof: fake reference did not leak to raw_events"
+log "Proof: reference SQL reached internal analytics events"
 
 ch_query "
 SELECT
-  countIf(position(payload, 'hacked_reference') > 0) AS hacked_payloads,
   countIf(position(payload, 'reference_sql') > 0) AS reference_payloads
 FROM raw_events
 WHERE user_id = '$USER_ID'

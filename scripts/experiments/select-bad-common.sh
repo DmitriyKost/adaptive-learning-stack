@@ -1,59 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE="${BASE:-http://localhost:8080}"
-CLICKHOUSE_CONTAINER="${CLICKHOUSE_CONTAINER:-adaptive-clickhouse}"
-TASK_PROGRESS_PG_CONTAINER="${TASK_PROGRESS_PG_CONTAINER:-adaptive-task-progress-postgres}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../lib/e2e-common.sh"
 
 TASK_ID="${TASK_ID:-00000000-0000-0000-0000-000000010001}"
-PASSWORD="${PASSWORD:-password123}"
-MAX_WAIT_SECONDS="${MAX_WAIT_SECONDS:-600}"
-POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-3}"
-
-REFERENCE_QUERY='SELECT id, name FROM task_data.employees ORDER BY id;'
-CORRECT_QUERY='SELECT id, name FROM task_data.employees ORDER BY id;'
-
-log() {
-  printf '\n\033[1;34m==>\033[0m %s\n' "$*"
-}
-
-ok() {
-  printf '\033[1;32mOK\033[0m %s\n' "$*"
-}
-
-fail() {
-  printf '\033[1;31mFAIL\033[0m %s\n' "$*" >&2
-  exit 1
-}
-
-need() {
-  command -v "$1" >/dev/null 2>&1 || fail "missing command: $1"
-}
-
-need curl
-need jq
-need docker
+CORRECT_QUERY="${CORRECT_QUERY:-SELECT id, name FROM task_data.employees ORDER BY id;}"
 
 register_user() {
   local scenario="$1"
-  EMAIL="student+select-bad-${scenario}-$(date +%s)@example.com"
-
-  log "Registering fresh user: $EMAIL"
-
-  REGISTER_RESPONSE="$(curl -fsS -X POST "$BASE/auth/register" \
-    -H 'Content-Type: application/json' \
-    -d "$(jq -nc \
-      --arg email "$EMAIL" \
-      --arg password "$PASSWORD" \
-      '{email:$email,password:$password}')")"
-
-  TOKEN="$(printf '%s\n' "$REGISTER_RESPONSE" | jq -r '.access_token')"
-  USER_ID="$(printf '%s\n' "$REGISTER_RESPONSE" | jq -r '.user.id')"
-
-  [[ "$TOKEN" != "null" && -n "$TOKEN" ]] || fail "no token"
-  [[ "$USER_ID" != "null" && -n "$USER_ID" ]] || fail "no user id"
-
-  ok "user_id=$USER_ID"
+  register_student "student+select-bad-${scenario}"
 }
 
 execute_attempt() {
@@ -74,27 +30,17 @@ execute_attempt() {
   printf '%s\n' "$RESPONSE" | jq '{
     event_id,
     task_id,
+    execution_success,
+    is_correct,
+    has_reference_result: has("reference_result"),
     user_rows: (.user_result.rows | length),
-    reference_rows: (.reference_result.rows | length),
     user_columns: .user_result.columns,
-    reference_columns: .reference_result.columns,
     created_at
   }'
-}
 
-ch_query() {
-  docker exec "$CLICKHOUSE_CONTAINER" clickhouse-client \
-    --user analytics \
-    --password analytics \
-    --database analytics \
-    --query "$1"
-}
-
-pg_query() {
-  docker exec "$TASK_PROGRESS_PG_CONTAINER" psql \
-    -U task_progress \
-    -d task_progress \
-    -tAc "$1"
+  if printf '%s\n' "$RESPONSE" | jq -e 'has("reference_result")' >/dev/null; then
+    fail "/playground/execute leaked reference_result"
+  fi
 }
 
 wait_for_llm() {
@@ -149,18 +95,6 @@ ORDER BY created_at DESC
 FORMAT PrettyCompact
 "
 
-  log "Raw LLM payload"
-  ch_query "
-SELECT response_payload
-FROM llm_analysis_runs
-WHERE run_id = '$RUN_ID'
-FORMAT TSVRaw
-" | jq '.skill_assessment | {
-    skill_scores,
-    recommended_skills,
-    user_graph_overlay
-  }'
-
   log "Learner model after LLM"
   docker exec "$TASK_PROGRESS_PG_CONTAINER" psql \
     -U task_progress \
@@ -182,71 +116,60 @@ ORDER BY s.code;
 
   log "Planner next task"
 
-NEXT_BODY_FILE="$(mktemp)"
-NEXT_HTTP_CODE=""
-DEADLINE=$((SECONDS + MAX_WAIT_SECONDS))
+  BODY_FILE="$(mktemp)"
+  DEADLINE=$((SECONDS + MAX_WAIT_SECONDS))
+  HTTP_CODE=""
 
-while (( SECONDS < DEADLINE )); do
-  NEXT_HTTP_CODE="$(curl -sS \
-    -o "$NEXT_BODY_FILE" \
-    -w '%{http_code}' \
-    -H "Authorization: Bearer $TOKEN" \
-    "$BASE/tasks/next" || true)"
+  while (( SECONDS < DEADLINE )); do
+    HTTP_CODE="$(get_next_task_http "$TOKEN" "$BODY_FILE")"
 
-  if [[ "$NEXT_HTTP_CODE" == "200" ]]; then
-    break
-  fi
-
-  if [[ "$NEXT_HTTP_CODE" == "409" ]]; then
-    ERROR_CODE="$(jq -r '.error // .code // empty' "$NEXT_BODY_FILE" 2>/dev/null || true)"
-
-    if [[ "$ERROR_CODE" == "analysis_pending" ]]; then
-      RETRY_AFTER="$(jq -r '.retry_after_seconds // empty' "$NEXT_BODY_FILE" 2>/dev/null || true)"
-      [[ "$RETRY_AFTER" =~ ^[0-9]+$ ]] || RETRY_AFTER="$POLL_INTERVAL_SECONDS"
-
-      printf 'planner says analysis_pending, retrying after %ss\n' "$RETRY_AFTER"
-      jq . "$NEXT_BODY_FILE" || cat "$NEXT_BODY_FILE"
-      sleep "$RETRY_AFTER"
-      continue
+    if [[ "$HTTP_CODE" == "200" ]]; then
+      break
     fi
+
+    if [[ "$HTTP_CODE" == "409" ]]; then
+      ERROR_CODE="$(jq -r '.error // .code // empty' "$BODY_FILE" 2>/dev/null || true)"
+      if [[ "$ERROR_CODE" == "analysis_pending" ]]; then
+        jq . "$BODY_FILE"
+        sleep "$POLL_INTERVAL_SECONDS"
+        continue
+      fi
+    fi
+
+    printf 'Unexpected /tasks/next HTTP %s\n' "$HTTP_CODE" >&2
+    cat "$BODY_FILE" >&2
+    rm -f "$BODY_FILE"
+    return
+  done
+
+  if [[ "$HTTP_CODE" == "200" ]]; then
+    NEXT_JSON="$(cat "$BODY_FILE")"
+    printf '%s\n' "$NEXT_JSON" | jq '{
+      selected_task: {
+        id: .task.id,
+        title: .task.title,
+        difficulty: .task.difficulty,
+        skills: [.task.skills[]? | {skill_code, weight}]
+      },
+      planner_decision: {
+        score,
+        reason,
+        repeat_mode,
+        graph_code,
+        professional_track
+      },
+      llm_recommended_skills_seen_by_planner: [
+        .recommended_skills[]? | {
+          skill_code,
+          priority,
+          recommended_action,
+          reason
+        }
+      ]
+    }'
   fi
 
-  printf 'Planner returned non-200 response, http=%s\n' "$NEXT_HTTP_CODE" >&2
-  cat "$NEXT_BODY_FILE" >&2
-  printf '\n' >&2
-  break
-done
+  rm -f "$BODY_FILE"
 
-if [[ "$NEXT_HTTP_CODE" == "200" ]]; then
-  NEXT_JSON="$(cat "$NEXT_BODY_FILE")"
-
-  printf '%s\n' "$NEXT_JSON" | jq '{
-    selected_task: {
-      id: .task.id,
-      title: .task.title,
-      difficulty: .task.difficulty,
-      skills: [.task.skills[]? | {skill_code, weight}]
-    },
-    planner_decision: {
-      score,
-      reason,
-      repeat_mode,
-      graph_code,
-      professional_track
-    },
-    llm_recommended_skills_seen_by_planner: [
-      .recommended_skills[]? | {
-        skill_code,
-        priority,
-        recommended_action,
-        reason
-      }
-    ]
-  }'
-else
-  printf '\033[1;33mWARN\033[0m planner did not return a task; learner-model part of the test still completed\n'
-fi
-
-rm -f "$NEXT_BODY_FILE"
   printf '\nUSER_ID=%s\nEMAIL=%s\nRUN_ID=%s\n' "$USER_ID" "$EMAIL" "$RUN_ID"
 }
