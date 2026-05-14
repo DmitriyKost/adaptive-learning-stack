@@ -148,7 +148,6 @@ services:
       retries: 30
     volumes:
       - task-progress-postgres-data:/var/lib/postgresql/data
-      - ./services/task-progress-postgres/init:/docker-entrypoint-initdb.d:ro
 
   task-progress-migrate:
     image: postgres:16-alpine
