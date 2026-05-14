@@ -69,7 +69,7 @@ type Task struct {
 	Title        string      `json:"title"`
 	Description  string      `json:"description"`
 	Difficulty   string      `json:"difficulty"`
-	ReferenceSQL string      `json:"reference_sql,omitempty"`
+	ReferenceSQL string      `json:"-"`
 	DatasetID    string      `json:"dataset_id,omitempty"`
 	IsActive     bool        `json:"is_active"`
 	Skills       []TaskSkill `json:"skills,omitempty"`
