@@ -15,6 +15,10 @@ const (
 	AnalysisStatusCompleted = "completed"
 	AnalysisStatusExpired   = "expired"
 	AnalysisStatusFailed    = "failed"
+
+	NextTaskStatusPending = "pending"
+	NextTaskStatusReady   = "ready"
+	NextTaskStatusFailed  = "failed"
 )
 
 type Skill struct {
@@ -158,6 +162,26 @@ type UserTrajectoryRecommendation struct {
 	RepeatMode bool      `json:"repeat_mode"`
 	Status     string    `json:"status"`
 	CreatedAt  time.Time `json:"created_at"`
+}
+
+type NextTaskCacheEntry struct {
+	UserID              string                    `json:"user_id"`
+	Status              string                    `json:"status"`
+	TaskID              string                    `json:"task_id,omitempty"`
+	GraphID             string                    `json:"graph_id,omitempty"`
+	Reason              string                    `json:"reason,omitempty"`
+	Score               float64                   `json:"score"`
+	GraphCode           string                    `json:"graph_code,omitempty"`
+	ProfessionalTrack   string                    `json:"professional_track,omitempty"`
+	RepeatMode          bool                      `json:"repeat_mode"`
+	RecommendedSkills   []UserSkillRecommendation `json:"recommended_skills,omitempty"`
+	SourceEventID       string                    `json:"source_event_id,omitempty"`
+	SourceAttemptID     string                    `json:"source_attempt_id,omitempty"`
+	SourceAnalysisRunID string                    `json:"source_analysis_run_id,omitempty"`
+	WaitUntil           *time.Time                `json:"wait_until,omitempty"`
+	ExpiresAt           *time.Time                `json:"expires_at,omitempty"`
+	CreatedAt           time.Time                 `json:"created_at"`
+	UpdatedAt           time.Time                 `json:"updated_at"`
 }
 
 type ProgressSummary struct {

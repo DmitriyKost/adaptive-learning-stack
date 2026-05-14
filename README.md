@@ -84,12 +84,11 @@ curl -s -X POST http://localhost:8080/playground/execute \
   -H 'Content-Type: application/json' \
   -d '{
     "task_id":"00000000-0000-0000-0000-000000010001",
-    "user_query":"SELECT id, name FROM task_data.employees ORDER BY id;",
-    "reference_query":"SELECT id, name FROM task_data.employees ORDER BY id;"
+    "user_query":"SELECT id, name FROM task_data.employees ORDER BY id;"
   }'
 ```
 
-После события `playground.execution.completed` сервис `task-progress` проверит результат и отправит события в аналитику. После успешного решения `/tasks/next` может вернуть `409 analysis_pending` до получения LLM-рекомендаций от analytics или до истечения soft timeout.
+`reference_sql` для автопроверки не принимается от клиента: `playground-service` всегда запрашивает эталонный SQL из `task-progress-service` и выполняет его в read-only режиме. После события `playground.execution.completed` сервис `task-progress` проверит результат и отправит события в аналитику. После успешного решения `/tasks/next` возвращает заранее сохраненную рекомендацию; пока LLM-оценка и async-выбор следующей задачи не завершены, endpoint возвращает `409 analysis_pending`.
 
 
 ## Запуск с внешним интеллектуальным модулем (`diploma`) и LoRA

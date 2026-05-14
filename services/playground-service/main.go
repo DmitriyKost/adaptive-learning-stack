@@ -66,8 +66,14 @@ func main() {
 		TaskSchema:       cfg.TaskSchema,
 		ReadonlyRole:     cfg.ReadonlyRole,
 	})
+	taskRefs, err := service.NewHTTPTaskReferenceClient(cfg.TaskProgressBaseURL, cfg.TaskProgressHTTPTimeout)
+	if err != nil {
+		log.Error("task reference client setup failed", "error", err)
+		os.Exit(1)
+	}
+
 	tokenService := service.NewTokenService(cfg.JWTSecret)
-	playgroundUsecase := service.NewPlaygroundUsecase(workspaceRepo, executor, producer)
+	playgroundUsecase := service.NewPlaygroundUsecase(workspaceRepo, executor, producer, taskRefs)
 
 	handler := httptransport.NewRouter(playgroundUsecase, tokenService, cfg.TrustedGatewayHeaders, log)
 

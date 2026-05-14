@@ -22,10 +22,11 @@ type PlaygroundUsecase struct {
 	workspaces WorkspaceStore
 	executor   *Executor
 	publisher  ExecutionPublisher
+	references TaskReferenceProvider
 }
 
-func NewPlaygroundUsecase(workspaces WorkspaceStore, executor *Executor, publisher ExecutionPublisher) *PlaygroundUsecase {
-	return &PlaygroundUsecase{workspaces: workspaces, executor: executor, publisher: publisher}
+func NewPlaygroundUsecase(workspaces WorkspaceStore, executor *Executor, publisher ExecutionPublisher, references TaskReferenceProvider) *PlaygroundUsecase {
+	return &PlaygroundUsecase{workspaces: workspaces, executor: executor, publisher: publisher, references: references}
 }
 
 func (u *PlaygroundUsecase) Execute(ctx context.Context, userID string, req domain.ExecuteRequest) (domain.ExecuteResponse, error) {
@@ -47,9 +48,14 @@ func (u *PlaygroundUsecase) Execute(ctx context.Context, userID string, req doma
 		return domain.ExecuteResponse{}, err
 	}
 
+	referenceQuery, err := u.references.ReferenceQuery(ctx, req.TaskID)
+	if err != nil {
+		return domain.ExecuteResponse{}, err
+	}
+
 	var referenceResult *domain.ExecuteResult
-	if strings.TrimSpace(req.ReferenceQuery) != "" && userResult.Error == nil {
-		referenceResult, err = u.executor.ExecuteReference(ctx, req.ReferenceQuery)
+	if userResult.Error == nil {
+		referenceResult, err = u.executor.ExecuteReference(ctx, referenceQuery)
 		if err != nil {
 			return domain.ExecuteResponse{}, err
 		}
@@ -77,7 +83,7 @@ func (u *PlaygroundUsecase) Execute(ctx context.Context, userID string, req doma
 		UserID:          userID,
 		TaskID:          req.TaskID,
 		UserQuery:       req.UserQuery,
-		ReferenceQuery:  req.ReferenceQuery,
+		ReferenceQuery:  referenceQuery,
 		UserResult:      userResult,
 		ReferenceResult: referenceResult,
 		CreatedAt:       createdAt,

@@ -8,7 +8,7 @@
 - выполняет пользовательский SQL в изолированной роли;
 - дает пользователю права на `SELECT/INSERT/UPDATE/DELETE/CREATE TABLE/DROP TABLE/TRUNCATE TABLE` только в его личном schema;
 - дает read-only доступ к общему schema `task_data` с данными заданий;
-- выполняет эталонный `reference_query` только в read-only режиме;
+- выполняет эталонный `reference_sql` из task-progress только в read-only режиме;
 - публикует событие выполнения в Kafka/Redpanda.
 
 ## API
@@ -38,8 +38,7 @@ X-User-Role
 ```json
 {
   "task_id": "task-1",
-  "user_query": "SELECT * FROM products",
-  "reference_query": "SELECT * FROM products"
+  "user_query": "SELECT * FROM products"
 }
 ```
 
@@ -92,12 +91,12 @@ playground.execution.completed
 - `user_id`
 - `task_id`
 - `user_query`
-- `reference_query`
+- `reference_query` в legacy event payload заполняется серверным `reference_sql` из task-progress; клиентский body игнорируется.
 - `user_result`
 - `reference_result`
 - `created_at`
 
-`task-progress` может подписаться на этот topic и сравнить `user_result` с `reference_result`, сохранить попытку, обновить модель обучающегося и пересчитать траекторию.
+`task-progress` может подписаться на этот topic и сравнить `user_result` с серверным `reference_result`, сохранить попытку, обновить модель обучающегося и инициировать async-выбор следующей задачи после LLM-оценки.
 
 ## Переменные окружения
 
@@ -191,8 +190,7 @@ curl -X POST http://localhost:8080/execute \
   -H 'Content-Type: application/json' \
   -d '{
     "task_id":"task-1",
-    "user_query":"SELECT * FROM products",
-    "reference_query":"SELECT * FROM products"
+    "user_query":"SELECT * FROM products"
   }'
 ```
 
@@ -207,8 +205,7 @@ curl -X POST http://localhost:8080/execute \
   -H 'Content-Type: application/json' \
   -d '{
     "task_id":"task-1",
-    "user_query":"CREATE TABLE notes(id bigserial primary key, text text)",
-    "reference_query":"SELECT * FROM products"
+    "user_query":"CREATE TABLE notes(id bigserial primary key, text text)"
   }'
 ```
 

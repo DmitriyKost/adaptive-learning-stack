@@ -12,12 +12,13 @@ import (
 
 type AnalyticsEventHandler struct {
 	repo      *repository.Repository
+	planner   *Planner
 	publisher EventPublisher
 	log       *slog.Logger
 }
 
-func NewAnalyticsEventHandler(repo *repository.Repository, publisher EventPublisher, log *slog.Logger) *AnalyticsEventHandler {
-	return &AnalyticsEventHandler{repo: repo, publisher: publisher, log: log}
+func NewAnalyticsEventHandler(repo *repository.Repository, planner *Planner, publisher EventPublisher, log *slog.Logger) *AnalyticsEventHandler {
+	return &AnalyticsEventHandler{repo: repo, planner: planner, publisher: publisher, log: log}
 }
 
 func (h *AnalyticsEventHandler) HandleSkillAssessmentUpdated(ctx context.Context, event domain.AnalyticsSkillAssessmentUpdatedEvent) error {
@@ -34,6 +35,16 @@ func (h *AnalyticsEventHandler) HandleSkillAssessmentUpdated(ctx context.Context
 	}
 	if err != nil {
 		return err
+	}
+
+	if h.planner != nil {
+		analysisRunID := ""
+		if event.Analysis != nil {
+			analysisRunID = event.Analysis.AnalysisRunID
+		}
+		if err := h.planner.PrecomputeNextTask(ctx, event.UserID, event.EventID, event.SourceAttemptID, analysisRunID); err != nil {
+			h.log.Error("precompute next task after analytics failed", "error", err, "event_id", event.EventID, "user_id", event.UserID)
+		}
 	}
 
 	for _, update := range updates {

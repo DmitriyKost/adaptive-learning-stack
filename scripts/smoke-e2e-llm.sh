@@ -89,8 +89,7 @@ EXEC_RESPONSE="$(curl -fsS -X POST "$BASE/playground/execute" \
   -d "$(jq -nc \
     --arg task_id "$TASK_ID" \
     --arg user_query "$USER_QUERY" \
-    --arg reference_query "$REFERENCE_QUERY" \
-    '{task_id:$task_id,user_query:$user_query,reference_query:$reference_query}')")"
+    '{task_id:$task_id,user_query:$user_query}')")"
 
 printf '%s\n' "$EXEC_RESPONSE" | jq .
 

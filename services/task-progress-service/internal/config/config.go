@@ -20,6 +20,8 @@ type Config struct {
 	PrerequisiteThreshold     float64
 	RecallThreshold           float64
 	RecommendationWaitTimeout time.Duration
+	NextTaskTTL               time.Duration
+	NextTaskRefreshTimeout    time.Duration
 	HintGenerationTimeout     time.Duration
 	AnalyticsInternalURL      string
 	MinHalfLifeDays           float64
@@ -51,6 +53,8 @@ func Load() (Config, error) {
 		PrerequisiteThreshold:     getEnvFloat("PREREQUISITE_THRESHOLD", 0.60),
 		RecallThreshold:           getEnvFloat("RECALL_THRESHOLD", 0.35),
 		RecommendationWaitTimeout: ParseDurationEnv("RECOMMENDATION_WAIT_TIMEOUT", 2*time.Minute),
+		NextTaskTTL:               ParseDurationEnv("NEXT_TASK_TTL", 7*24*time.Hour),
+		NextTaskRefreshTimeout:    ParseDurationEnv("NEXT_TASK_REFRESH_TIMEOUT", 30*time.Second),
 		HintGenerationTimeout:     ParseDurationEnv("HINT_GENERATION_TIMEOUT", 15*time.Second),
 		AnalyticsInternalURL:      getEnv("ANALYTICS_INTERNAL_URL", "http://localhost:8083"),
 		MinHalfLifeDays:           getEnvFloat("MIN_HALF_LIFE_DAYS", 1.0),

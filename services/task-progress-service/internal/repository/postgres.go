@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -357,6 +358,130 @@ func (r *Repository) GetActiveAnalysisState(ctx context.Context, userID string, 
 	return &state, nil
 }
 
+func (r *Repository) GetNextTaskRecommendation(ctx context.Context, userID string, now time.Time) (domain.NextTaskRecommendation, error) {
+	var entry domain.NextTaskCacheEntry
+	var recommendedSkillsRaw []byte
+	err := r.db.QueryRow(ctx, `
+		SELECT user_id::text, status, COALESCE(task_id::text, ''), COALESCE(graph_id::text, ''),
+		       COALESCE(reason, ''), score, COALESCE(graph_code, ''), COALESCE(professional_track, ''), repeat_mode,
+		       recommended_skills, COALESCE(source_event_id::text, ''), COALESCE(source_attempt_id::text, ''),
+		       COALESCE(source_analysis_run_id, ''), wait_until, expires_at, created_at, updated_at
+		FROM user_next_task_recommendations
+		WHERE user_id = $1`, userID).Scan(&entry.UserID, &entry.Status, &entry.TaskID, &entry.GraphID, &entry.Reason, &entry.Score, &entry.GraphCode, &entry.ProfessionalTrack, &entry.RepeatMode, &recommendedSkillsRaw, &entry.SourceEventID, &entry.SourceAttemptID, &entry.SourceAnalysisRunID, &entry.WaitUntil, &entry.ExpiresAt, &entry.CreatedAt, &entry.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.NextTaskRecommendation{}, domain.ErrNotFound
+	}
+	if err != nil {
+		return domain.NextTaskRecommendation{}, err
+	}
+
+	if entry.Status == domain.NextTaskStatusPending {
+		retryAfter := retryAfterSeconds(entry.WaitUntil, now, 5)
+		return domain.NextTaskRecommendation{}, &domain.AnalysisPendingError{State: domain.UserAnalysisState{UserID: userID, PendingTaskID: entry.TaskID, PendingAttemptID: entry.SourceAttemptID, Status: domain.AnalysisStatusPending, PendingSince: entry.UpdatedAt, WaitUntil: entry.WaitUntil, SourceEventID: entry.SourceEventID, UpdatedAt: entry.UpdatedAt}, RetryAfterSeconds: retryAfter}
+	}
+	if entry.Status != domain.NextTaskStatusReady || entry.TaskID == "" {
+		return domain.NextTaskRecommendation{}, domain.ErrNotFound
+	}
+	if entry.ExpiresAt != nil && !entry.ExpiresAt.After(now) {
+		return domain.NextTaskRecommendation{}, domain.ErrStaleAssessment
+	}
+	if len(recommendedSkillsRaw) > 0 {
+		_ = json.Unmarshal(recommendedSkillsRaw, &entry.RecommendedSkills)
+	}
+	task, err := r.GetTaskByID(ctx, entry.TaskID)
+	if err != nil {
+		return domain.NextTaskRecommendation{}, err
+	}
+	return domain.NextTaskRecommendation{Task: task, Reason: entry.Reason, Score: entry.Score, GraphCode: entry.GraphCode, Track: entry.ProfessionalTrack, RepeatMode: entry.RepeatMode, RecommendedSkills: entry.RecommendedSkills}, nil
+}
+
+func (r *Repository) StartNextTaskRefresh(ctx context.Context, userID string, now time.Time, waitTimeout time.Duration) (domain.UserAnalysisState, error) {
+	if waitTimeout <= 0 {
+		waitTimeout = 30 * time.Second
+	}
+	waitUntil := now.Add(waitTimeout)
+	var state domain.UserAnalysisState
+	err := r.db.QueryRow(ctx, `
+		INSERT INTO user_next_task_recommendations (user_id, status, wait_until, updated_at)
+		VALUES ($1, 'pending', $2, $3)
+		ON CONFLICT (user_id) DO UPDATE
+		SET status = 'pending',
+		    wait_until = EXCLUDED.wait_until,
+		    updated_at = EXCLUDED.updated_at
+		RETURNING user_id::text, COALESCE(task_id::text, ''), COALESCE(source_attempt_id::text, ''), status, updated_at, wait_until, COALESCE(source_event_id::text, ''), updated_at`, userID, waitUntil, now).Scan(&state.UserID, &state.PendingTaskID, &state.PendingAttemptID, &state.Status, &state.PendingSince, &state.WaitUntil, &state.SourceEventID, &state.UpdatedAt)
+	return state, err
+}
+
+func (r *Repository) SaveNextTaskRecommendation(ctx context.Context, userID string, rec domain.NextTaskRecommendation, sourceEventID, sourceAttemptID, sourceAnalysisRunID string, expiresAt time.Time) error {
+	if userID == "" || rec.Task.ID == "" {
+		return domain.ErrInvalidInput
+	}
+	profile, err := r.GetUserProfile(ctx, userID)
+	if errors.Is(err, domain.ErrNotFound) {
+		profile, err = r.GetOrCreateUserProfile(ctx, userID, rec.GraphCode)
+	}
+	if err != nil {
+		return err
+	}
+	if rec.GraphCode == "" {
+		rec.GraphCode = profile.GraphCode
+	}
+	if rec.Track == "" {
+		rec.Track = profile.ProfessionalTrack
+	}
+	recommendedSkills, err := json.Marshal(rec.RecommendedSkills)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	_, err = r.db.Exec(ctx, `
+		INSERT INTO user_next_task_recommendations (user_id, status, task_id, graph_id, reason, score, graph_code, professional_track, repeat_mode, recommended_skills, source_event_id, source_attempt_id, source_analysis_run_id, expires_at, wait_until, created_at, updated_at)
+		VALUES ($1, 'ready', $2, $3, NULLIF($4, ''), $5, NULLIF($6, ''), NULLIF($7, ''), $8, $9::jsonb, $10, $11, NULLIF($12, ''), $13, NULL, $14, $14)
+		ON CONFLICT (user_id) DO UPDATE
+		SET status = 'ready',
+		    task_id = EXCLUDED.task_id,
+		    graph_id = EXCLUDED.graph_id,
+		    reason = EXCLUDED.reason,
+		    score = EXCLUDED.score,
+		    graph_code = EXCLUDED.graph_code,
+		    professional_track = EXCLUDED.professional_track,
+		    repeat_mode = EXCLUDED.repeat_mode,
+		    recommended_skills = EXCLUDED.recommended_skills,
+		    source_event_id = EXCLUDED.source_event_id,
+		    source_attempt_id = EXCLUDED.source_attempt_id,
+		    source_analysis_run_id = EXCLUDED.source_analysis_run_id,
+		    expires_at = EXCLUDED.expires_at,
+		    wait_until = NULL,
+		    updated_at = EXCLUDED.updated_at`, userID, rec.Task.ID, profile.GraphID, rec.Reason, rec.Score, rec.GraphCode, rec.Track, rec.RepeatMode, string(recommendedSkills), nullUUID(sourceEventID), nullUUID(sourceAttemptID), sourceAnalysisRunID, expiresAt, now)
+	return err
+}
+
+func (r *Repository) MarkNextTaskRefreshFailed(ctx context.Context, userID string, now time.Time) error {
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO user_next_task_recommendations (user_id, status, updated_at)
+		VALUES ($1, 'failed', $2)
+		ON CONFLICT (user_id) DO UPDATE
+		SET status = 'failed', wait_until = NULL, updated_at = EXCLUDED.updated_at`, userID, now)
+	return err
+}
+
+func retryAfterSeconds(waitUntil *time.Time, now time.Time, fallback int) int {
+	if fallback <= 0 {
+		fallback = 5
+	}
+	if waitUntil == nil {
+		return fallback
+	}
+	remaining := int(waitUntil.Sub(now).Seconds())
+	if remaining <= 0 {
+		return 1
+	}
+	if remaining < fallback {
+		return remaining
+	}
+	return fallback
+}
+
 func (r *Repository) ListTasks(ctx context.Context) ([]domain.Task, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT id::text, title, description, difficulty, COALESCE(reference_sql, ''), COALESCE(dataset_id::text, ''), is_active, created_at, updated_at
@@ -545,6 +670,9 @@ func (r *Repository) CreateAttemptAndUpdateModel(ctx context.Context, attempt do
 	if attempt.IsCorrect {
 		state, err := setAnalysisPendingTx(ctx, tx, attempt.UserID, attempt.TaskID, attempt.ID, sourceEventID, attempt.CreatedAt, recommendationWaitTimeout)
 		if err != nil {
+			return 0, nil, nil, err
+		}
+		if err := setNextTaskPendingTx(ctx, tx, attempt.UserID, attempt.TaskID, attempt.ID, sourceEventID, attempt.CreatedAt, recommendationWaitTimeout); err != nil {
 			return 0, nil, nil, err
 		}
 		analysisState = &state
@@ -1015,6 +1143,24 @@ func setAnalysisPendingTx(ctx context.Context, tx pgx.Tx, userID, taskID, attemp
 	return state, err
 }
 
+func setNextTaskPendingTx(ctx context.Context, tx pgx.Tx, userID, taskID, attemptID, sourceEventID string, now time.Time, waitTimeout time.Duration) error {
+	if waitTimeout <= 0 {
+		waitTimeout = 30 * time.Second
+	}
+	waitUntil := now.Add(waitTimeout)
+	_, err := tx.Exec(ctx, `
+		INSERT INTO user_next_task_recommendations (user_id, status, task_id, source_attempt_id, source_event_id, wait_until, updated_at)
+		VALUES ($1, 'pending', $2, $3, $4, $5, $6)
+		ON CONFLICT (user_id) DO UPDATE
+		SET status = 'pending',
+		    task_id = EXCLUDED.task_id,
+		    source_attempt_id = EXCLUDED.source_attempt_id,
+		    source_event_id = EXCLUDED.source_event_id,
+		    wait_until = EXCLUDED.wait_until,
+		    updated_at = EXCLUDED.updated_at`, userID, taskID, nullUUID(attemptID), nullUUID(sourceEventID), waitUntil, now)
+	return err
+}
+
 func completeAnalysisIfMatchesTx(ctx context.Context, tx pgx.Tx, userID, taskID, attemptID, sourceEventID string, now time.Time) error {
 	if userID == "" {
 		return domain.ErrInvalidInput
@@ -1022,13 +1168,13 @@ func completeAnalysisIfMatchesTx(ctx context.Context, tx pgx.Tx, userID, taskID,
 	if taskID != "" && attemptID != "" {
 		_, err := tx.Exec(ctx, `
 			UPDATE user_analysis_state
-			SET status = 'completed', source_event_id = $4, updated_at = $5
+			SET status = 'completed', wait_until = NULL, source_event_id = $4, updated_at = $5
 			WHERE user_id = $1 AND status = 'pending' AND pending_task_id = $2 AND pending_attempt_id = $3`, userID, taskID, attemptID, nullUUID(sourceEventID), now)
 		return err
 	}
 	_, err := tx.Exec(ctx, `
 		UPDATE user_analysis_state
-		SET status = 'completed', source_event_id = $2, updated_at = $3
+		SET status = 'completed', wait_until = NULL, source_event_id = $2, updated_at = $3
 		WHERE user_id = $1 AND status = 'pending'`, userID, nullUUID(sourceEventID), now)
 	return err
 }

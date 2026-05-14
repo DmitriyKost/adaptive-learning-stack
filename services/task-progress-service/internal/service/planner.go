@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -18,6 +19,8 @@ type PlannerConfig struct {
 	PrerequisiteThreshold     float64
 	RecallThreshold           float64
 	RecommendationWaitTimeout time.Duration
+	NextTaskTTL               time.Duration
+	NextTaskRefreshTimeout    time.Duration
 }
 
 type Planner struct {
@@ -42,14 +45,49 @@ func (p *Planner) NextTask(ctx context.Context, userID string) (domain.NextTaskR
 		return domain.NextTaskRecommendation{}, err
 	}
 	if analysisState != nil {
-		retryAfter := 5
-		if analysisState.WaitUntil != nil {
-			remaining := int(time.Until(*analysisState.WaitUntil).Seconds())
-			if remaining > 0 && remaining < retryAfter {
-				retryAfter = remaining
-			}
+		return domain.NextTaskRecommendation{}, pendingError(*analysisState, now, 5)
+	}
+	rec, err := p.repo.GetNextTaskRecommendation(ctx, userID, now)
+	if err == nil {
+		return rec, nil
+	}
+	if errors.Is(err, domain.ErrAnalysisPending) {
+		return domain.NextTaskRecommendation{}, err
+	}
+	if errors.Is(err, domain.ErrNotFound) || errors.Is(err, domain.ErrStaleAssessment) {
+		state, startErr := p.repo.StartNextTaskRefresh(ctx, userID, now, p.refreshTimeout())
+		if startErr != nil {
+			return domain.NextTaskRecommendation{}, startErr
 		}
-		return domain.NextTaskRecommendation{}, &domain.AnalysisPendingError{State: *analysisState, RetryAfterSeconds: retryAfter}
+		p.precomputeNextTaskAsync(userID, "", "", "")
+		return domain.NextTaskRecommendation{}, pendingError(state, now, 5)
+	}
+	return domain.NextTaskRecommendation{}, err
+}
+
+func (p *Planner) PrecomputeNextTask(ctx context.Context, userID, sourceEventID, sourceAttemptID, sourceAnalysisRunID string) error {
+	now := time.Now().UTC()
+	rec, err := p.computeNextTask(ctx, userID, now, true)
+	if err != nil {
+		_ = p.repo.MarkNextTaskRefreshFailed(ctx, userID, time.Now().UTC())
+		return err
+	}
+	return p.repo.SaveNextTaskRecommendation(ctx, userID, rec, sourceEventID, sourceAttemptID, sourceAnalysisRunID, now.Add(p.nextTaskTTL()))
+}
+
+func (p *Planner) precomputeNextTaskAsync(userID, sourceEventID, sourceAttemptID, sourceAnalysisRunID string) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), p.refreshTimeout())
+		defer cancel()
+		if err := p.PrecomputeNextTask(ctx, userID, sourceEventID, sourceAttemptID, sourceAnalysisRunID); err != nil {
+			p.log.Error("precompute next task failed", "error", err, "user_id", userID)
+		}
+	}()
+}
+
+func (p *Planner) computeNextTask(ctx context.Context, userID string, now time.Time, publish bool) (domain.NextTaskRecommendation, error) {
+	if userID == "" {
+		return domain.NextTaskRecommendation{}, domain.ErrInvalidInput
 	}
 	profile, err := p.repo.GetOrCreateUserProfile(ctx, userID, p.cfg.DefaultGraphCode)
 	if err != nil {
@@ -239,11 +277,44 @@ func (p *Planner) NextTask(ctx context.Context, userID string) (domain.NextTaskR
 		RecommendedSkills:  recommendations,
 		CreatedAt:          now,
 	}
-	if err := p.publisher.PublishTaskRecommended(ctx, event); err != nil {
-		p.log.Error("publish task recommended failed", "error", err, "user_id", userID, "task_id", best.task.ID)
+	if publish {
+		if err := p.publisher.PublishTaskRecommended(ctx, event); err != nil {
+			p.log.Error("publish task recommended failed", "error", err, "user_id", userID, "task_id", best.task.ID)
+		}
 	}
 
 	return domain.NextTaskRecommendation{Task: best.task, Reason: best.reason, Score: best.score, GraphCode: profile.GraphCode, Track: profile.ProfessionalTrack, RepeatMode: best.repeat, RecommendedSkills: recommendations}, nil
+}
+
+func (p *Planner) nextTaskTTL() time.Duration {
+	if p.cfg.NextTaskTTL > 0 {
+		return p.cfg.NextTaskTTL
+	}
+	return 7 * 24 * time.Hour
+}
+
+func (p *Planner) refreshTimeout() time.Duration {
+	if p.cfg.NextTaskRefreshTimeout > 0 {
+		return p.cfg.NextTaskRefreshTimeout
+	}
+	return 30 * time.Second
+}
+
+func pendingError(state domain.UserAnalysisState, now time.Time, fallbackRetryAfter int) error {
+	retryAfter := fallbackRetryAfter
+	if retryAfter <= 0 {
+		retryAfter = 5
+	}
+	if state.WaitUntil != nil {
+		remaining := int(state.WaitUntil.Sub(now).Seconds())
+		if remaining > 0 && remaining < retryAfter {
+			retryAfter = remaining
+		}
+		if remaining <= 0 {
+			retryAfter = 1
+		}
+	}
+	return &domain.AnalysisPendingError{State: state, RetryAfterSeconds: retryAfter}
 }
 
 func (p *Planner) dependenciesSatisfied(skillID string, depsBySkill map[string][]domain.SkillDependency, graphSkillMap map[string]domain.GraphSkill, userSkills map[string]domain.UserSkill, now time.Time) bool {

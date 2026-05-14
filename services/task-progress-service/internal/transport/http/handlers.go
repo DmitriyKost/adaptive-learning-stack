@@ -30,6 +30,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", s.health)
 	mux.HandleFunc("/ready", s.ready)
+	mux.HandleFunc("/internal/tasks/", s.internalTaskReference)
 
 	protected := http.NewServeMux()
 	protected.HandleFunc("/tasks", s.tasks)
@@ -72,6 +73,40 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+}
+
+type taskReferenceResponse struct {
+	TaskID       string `json:"task_id"`
+	ReferenceSQL string `json:"reference_sql"`
+}
+
+func (s *Server) internalTaskReference(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/internal/tasks/")
+	path = strings.Trim(path, "/")
+	if !strings.HasSuffix(path, "/reference") {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	taskID := strings.TrimSuffix(path, "/reference")
+	taskID = strings.Trim(taskID, "/")
+	if taskID == "" {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	task, err := s.progress.GetTask(r.Context(), taskID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if strings.TrimSpace(task.ReferenceSQL) == "" {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, taskReferenceResponse{TaskID: task.ID, ReferenceSQL: task.ReferenceSQL})
 }
 
 func (s *Server) tasks(w http.ResponseWriter, r *http.Request) {
