@@ -77,7 +77,7 @@ for i in $(seq 1 "$RUNS"); do
       fi
     fi
 
-    if [[ "$HTTP_CODE" == "409" ]]; then
+    if [[ "$HTTP_CODE" == "202" || "$HTTP_CODE" == "409" ]]; then
       ERROR_CODE="$(jq -r '.error // .code // empty' "$BODY_FILE" 2>/dev/null || true)"
       if [[ "$ERROR_CODE" == "analysis_pending" ]]; then
         PENDING_COUNT=$((PENDING_COUNT + 1))

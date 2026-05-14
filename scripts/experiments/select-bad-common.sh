@@ -127,7 +127,7 @@ ORDER BY s.code;
       break
     fi
 
-    if [[ "$HTTP_CODE" == "409" ]]; then
+    if [[ "$HTTP_CODE" == "202" || "$HTTP_CODE" == "409" ]]; then
       ERROR_CODE="$(jq -r '.error // .code // empty' "$BODY_FILE" 2>/dev/null || true)"
       if [[ "$ERROR_CODE" == "analysis_pending" ]]; then
         jq . "$BODY_FILE"

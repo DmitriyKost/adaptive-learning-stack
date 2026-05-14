@@ -275,7 +275,7 @@ log "Calling /tasks/next immediately after submit; pending is expected"
 PENDING_BODY_FILE="$(mktemp)"
 PENDING_HTTP_CODE="$(get_next_task "$TOKEN" "$PENDING_BODY_FILE")"
 
-if [[ "$PENDING_HTTP_CODE" == "409" ]]; then
+if [[ "$PENDING_HTTP_CODE" == "202" || "$PENDING_HTTP_CODE" == "409" ]]; then
   PENDING_ERROR="$(jq -r '.error // empty' "$PENDING_BODY_FILE")"
   if [[ "$PENDING_ERROR" == "analysis_pending" ]]; then
     ok "/tasks/next returns analysis_pending while LLM update is running"
