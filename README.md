@@ -1,289 +1,238 @@
-# Adaptive Learning local stack
+# Adaptive Learning Stack
 
-Общий локальный стенд для микросервисов:
+Локальный dev-стенд для адаптивного SQL-курса.
 
-- `api-gateway`
-- `auth-service`
-- `playground-service`
-- `task-progress-service`
-- `analytics-service`
-- PostgreSQL для `auth-service`
-- PostgreSQL для `playground-service`
-- PostgreSQL для `task-progress-service`
-- ClickHouse для `analytics-service`
-- Redpanda как Kafka-брокер
+Стек состоит из:
+
+- `api-gateway` — единая публичная точка входа;
+- `auth-service` — регистрация, login, refresh, JWT;
+- `playground-service` — безопасное выполнение SQL пользователя и server-side автопроверка;
+- `task-progress-service` — задачи, прогресс, learner model, граф навыков, выбор следующей задачи;
+- `analytics-service` — event log, ClickHouse, подготовка контекста и интеграция с внешним intelligence service;
+- `intelligence` из внешнего модуля `diploma` — LLM/LoRA/Ollama-интеллект;
+- PostgreSQL для auth/playground/task-progress;
+- ClickHouse для analytics;
+- Redpanda как Kafka-compatible broker.
 
 ## Запуск
 
-```bash
-docker compose up --build
-```
+Обычный dev-запуск:
 
-После первого запуска будут выполнены миграции:
+    docker compose up -d --build
 
-- `auth-migrate` применяет миграции auth-сервиса;
-- `playground-migrate` создает защищенную playground-БД, роли, `task_data` и демо-данные;
-- `task-progress-migrate` создает графы, навыки, задачи и состояние прогресса;
-- `clickhouse-migrate` создает аналитические таблицы в ClickHouse.
+Запуск с внешним модулем `diploma`:
 
-Gateway доступен на:
+    docker compose \
+      -f docker-compose.yml \
+      -f docker-compose.with-diploma.yml \
+      up -d --build
 
-```text
-http://localhost:8080
-```
+Запуск с GPU override:
 
-Прямые debug-порты сервисов:
+    docker compose \
+      -f docker-compose.yml \
+      -f docker-compose.with-diploma.yml \
+      -f docker-compose.with-diploma.gpu.yml \
+      up -d --build
 
-```text
-auth-service:          http://localhost:8081
-playground-service:    http://localhost:8082
-task-progress-service: http://localhost:8083
-analytics-service:     http://localhost:8084
-```
+Полный reset dev-данных:
 
-## Проверка готовности
+    docker compose \
+      -f docker-compose.yml \
+      -f docker-compose.with-diploma.yml \
+      -f docker-compose.with-diploma.gpu.yml \
+      down -v --remove-orphans
 
-```bash
-curl http://localhost:8080/health
-curl http://localhost:8080/ready
-```
+## Основной public API flow
 
-## Быстрый smoke-test
+Frontend работает только через gateway:
 
-Регистрация:
+    http://localhost:8080
 
-```bash
-curl -s -X POST http://localhost:8080/auth/register \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"student@example.com","password":"password123"}'
-```
+Новый пользователь:
 
-Логин:
+    POST /auth/register
+    GET  /tasks/next
 
-```bash
-TOKEN=$(curl -s -X POST http://localhost:8080/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"student@example.com","password":"password123"}' \
-  | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+`GET /tasks/next` для нового пользователя сразу возвращает стартовую задачу. После успешного решения задачи следующий выбор становится асинхронным:
 
-echo "$TOKEN"
-```
+    POST /playground/execute
+    GET  /tasks/next
 
-Получить следующую задачу:
+Если LLM-анализ ещё идёт, `/tasks/next` возвращает:
 
-```bash
-curl -s http://localhost:8080/tasks/next \
-  -H "Authorization: Bearer $TOKEN"
-```
+    HTTP/1.1 202 Accepted
+    Retry-After: 5
 
-Выполнить SQL через playground напрямую:
+Тело ответа:
 
-```bash
-curl -s -X POST http://localhost:8080/playground/execute \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "task_id":"00000000-0000-0000-0000-000000010001",
-    "user_query":"SELECT id, name FROM task_data.employees ORDER BY id;"
-  }'
-```
+    {
+      "status": "pending",
+      "error": "analysis_pending",
+      "retry_after_seconds": 5,
+      "analysis_state": {
+        "status": "pending"
+      }
+    }
 
-`reference_sql` для автопроверки не принимается от клиента: `playground-service` всегда запрашивает эталонный SQL из `task-progress-service` и выполняет его в read-only режиме. После события `playground.execution.completed` сервис `task-progress` проверит результат и отправит события в аналитику. После успешного решения `/tasks/next` возвращает заранее сохраненную рекомендацию; пока LLM-оценка и async-выбор следующей задачи не завершены, endpoint возвращает `409 analysis_pending`.
+Когда следующая задача готова:
 
+    HTTP/1.1 200 OK
 
-## Запуск с внешним интеллектуальным модулем (`diploma`) и LoRA
+    {
+      "task": {
+        "id": "...",
+        "title": "...",
+        "description": "...",
+        "difficulty": "easy",
+        "skills": [
+          { "skill_code": "select", "weight": 1 }
+        ]
+      },
+      "reason": "...",
+      "score": 1.23,
+      "graph_code": "core_sql",
+      "professional_track": "core",
+      "repeat_mode": false,
+      "recommended_skills": []
+    }
 
-Рекомендуемая структура каталогов:
+## Выполнение SQL
 
-```text
-workspace/
-  adaptive-learning-stack/
-  diploma/
-```
+Публичный request:
 
-Внешний модуль запускается как Docker-контейнер `intelligence` в той же compose-сети. Он грузит Hugging Face base model из `../diploma/models/base` и LoRA из `../diploma/lora_sql_mastery`. Ollama для этого режима не используется.
+    POST /playground/execute
 
-### 1. Подготовить базовую модель
+    {
+      "task_id": "00000000-0000-0000-0000-000000010001",
+      "user_query": "SELECT id, name FROM task_data.employees ORDER BY id;"
+    }
 
-LoRA в `diploma/lora_sql_mastery/adapter_config.json` указывает на base model:
+Клиент не передаёт `reference_query`. Если поле `reference_query` или любое другое неизвестное поле передано, request отклоняется.
 
-```text
-unsloth/meta-llama-3.1-8b-instruct-unsloth-bnb-4bit
-```
+Публичный response:
 
-Скачайте её в Hugging Face формате, не GGUF/Ollama:
+    {
+      "event_id": "...",
+      "user_id": "...",
+      "task_id": "...",
+      "execution_success": true,
+      "is_correct": true,
+      "user_result": {
+        "columns": ["id", "name"],
+        "rows": [
+          { "id": 1, "name": "Ivan" }
+        ],
+        "rows_affected": 1,
+        "query_time_ms": 2,
+        "truncated": false
+      },
+      "created_at": "2026-05-14T19:29:44Z"
+    }
 
-```bash
-cd ../diploma
-python3 -m pip install -U "huggingface_hub[cli]"
-huggingface-cli download \
-  unsloth/meta-llama-3.1-8b-instruct-unsloth-bnb-4bit \
-  --local-dir models/base
-```
+Публичный response не содержит `reference_sql` и не содержит `reference_result`.
 
-Или из `adaptive-learning-stack`:
+## Reference SQL и автопроверка
 
-```bash
-./scripts/download-diploma-base-model.sh
-```
+`reference_sql` хранится в `task-progress-service` и доступен только внутреннему backend flow.
 
-Если Hugging Face вернёт 401/403, сначала выполните `huggingface-cli login` и примите условия доступа к base model.
+Путь проверки:
 
-Если модель лежит в другом месте, задайте путь в `adaptive-learning-stack/.env`:
+    frontend
+    -> POST /playground/execute { task_id, user_query }
+    -> playground-service запрашивает internal task reference у task-progress-service
+    -> playground-service выполняет user SQL
+    -> playground-service выполняет reference SQL read-only
+    -> playground-service сравнивает результаты по comparison policy
+    -> playground-service публикует playground.execution.completed
+    -> task-progress-service обновляет learner model
+    -> analytics-service запускает LLM analysis
+    -> task-progress-service фиксирует следующую задачу
 
-```dotenv
-DIPLOMA_MODELS_HOST=/absolute/path/to/base-model
-DIPLOMA_LORA_HOST=/absolute/path/to/lora_sql_mastery
-```
+`task-progress-service` владеет policy проверки задачи. Сейчас поддерживается:
 
-### 2. Настроить compose env
+    {
+      "comparison_policy": {
+        "order_sensitive": true
+      }
+    }
 
-```bash
-cd ../adaptive-learning-stack
-cp .env.example .env
-```
+Если `order_sensitive=false`, строки сравниваются без учёта порядка. Если `order_sensitive=true`, порядок строк является частью ответа.
 
-Ключевые значения по умолчанию:
+## Отключённый legacy endpoint
 
-```dotenv
-DIPLOMA_ROOT=../diploma
-DIPLOMA_MODELS_HOST=../diploma/models/base
-DIPLOMA_LORA_HOST=../diploma/lora_sql_mastery
-LLM_LOAD_IN_4BIT=true
-```
+Старый endpoint:
 
-### 3. Запуск на NVIDIA GPU
+    POST /tasks/{id}/submit
 
-Для Llama 3.1 8B 4-bit нужен Docker с NVIDIA Container Toolkit. Проверка на хосте:
+отключён и возвращает:
 
-```bash
-nvidia-smi
-docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
-```
+    HTTP/1.1 410 Gone
 
-Запуск полного стека:
+    { "error": "legacy_submit_disabled" }
 
-```bash
-docker compose \
-  -f docker-compose.yml \
-  -f docker-compose.with-diploma.yml \
-  -f docker-compose.with-diploma.gpu.yml \
-  up -d --build --force-recreate
-```
+Единственный публичный submit path — `POST /playground/execute`.
 
-CPU-режим оставлен только для маленьких совместимых моделей. Для него нужно выставить `LLM_LOAD_IN_4BIT=false`, но 8B-модель будет медленной и потребует много RAM.
+## Проверки
 
-### 4. Проверка readiness и прогрев модели
+Главный smoke-test:
 
-```bash
-curl -sS http://localhost:8090/health | jq .
-curl -sS http://localhost:8090/ready | jq .
-```
+    MAX_WAIT_SECONDS=600 ./scripts/smoke-e2e-llm.sh
 
-`/ready` проверяет, что base model и LoRA примонтированы. Чтобы загрузить модель в память до E2E-теста:
+Contract/security check:
 
-```bash
-curl -sS -X POST http://localhost:8090/warmup \
-  -H 'Content-Type: application/json' \
-  -d '{}' | jq .
-```
+    MAX_WAIT_SECONDS=600 ./scripts/checks/api-contract-check.sh
 
-### 5. Полный smoke-test
+Проверка order-sensitive задач:
 
-```bash
-chmod +x scripts/smoke-e2e-llm.sh
-MAX_WAIT_SECONDS=600 ./scripts/smoke-e2e-llm.sh
-```
+    ./scripts/checks/order-sensitive-check.sh
 
-Smoke-test делает полный прогон нового пользователя:
+Benchmark ожидания следующей задачи:
 
-```text
-api-gateway → playground → Kafka → task-progress → Kafka → analytics-service → intelligence/LoRA → analytics.skill_assessment.updated → learner model → planner /tasks/next
-```
+    RUNS=5 \
+    POLL_INTERVAL_SECONDS=0.2 \
+    MAX_WAIT_SECONDS=600 \
+    ./scripts/checks/benchmark-next-task-wait.sh
 
-Успех подтверждается строками:
+## Intelligence service
 
-```text
-OK intelligence model loaded
-OK LLM run completed: ...
-OK planner returned next_task_id=...
-OK E2E smoke test passed
-```
+При запуске с `docker-compose.with-diploma.yml` `analytics-service` вызывает внешний Python intelligence service:
 
-`analytics-service` использует внешний intelligence HTTP API:
+    GET  /ready
+    POST /v1/assessments/evaluate
+    POST /v1/hints/generate
 
-```text
-INTELLIGENCE_BASE_URL=http://intelligence:8080
-INTELLIGENCE_READY_PATH=/ready
-INTELLIGENCE_HTTP_TIMEOUT=600s
-HINT_GENERATION_TIMEOUT=600s
-```
+Основные переменные:
 
-## Перезапуск с чистыми данными
+    INTELLIGENCE_BASE_URL=http://intelligence:8080
+    INTELLIGENCE_EVALUATE_PATH=/v1/assessments/evaluate
+    INTELLIGENCE_HINT_PATH=/v1/hints/generate
+    INTELLIGENCE_READY_PATH=/ready
+    INTELLIGENCE_HTTP_TIMEOUT=600s
+    INTELLIGENCE_INCLUDE_CAREER=false
 
-```bash
-docker compose down -v
-```
+Проверка:
 
-Затем снова:
+    curl -sS http://localhost:8090/ready | jq .
+    curl -sS http://localhost:8084/ready | jq .
+    curl -sS http://localhost:8080/ready | jq .
 
-```bash
-docker compose up --build
-```
+## Миграции task-progress
 
-## Важные настройки
+Миграции применяются compose job'ом `task-progress-migrate` по `*.up.sql`.
 
-Все env-файлы лежат в `env/`:
+Текущая структура:
 
-- `auth-service.env`
-- `playground-service.env`
-- `task-progress-service.env`
-- `analytics-service.env`
-- `api-gateway.env`
+    000001_init.up.sql
+    000002_graph_thresholds.up.sql
+    000003_async_overrides_and_recommendations.up.sql
+    000004_hint_state.up.sql
+    000005_persisted_next_task.up.sql
+    000006_task_comparison_policy.up.sql
+    000007_seed_sql_tasks.up.sql
 
-Общий `JWT_SECRET` должен совпадать в `auth-service`, `api-gateway`, `task-progress-service` и `playground-service`.
+Задачи seed'ятся отдельной миграцией `000007_seed_sql_tasks.up.sql`.
 
-В compose используется внутренний Kafka broker address:
+## Dev notes
 
-```text
-redpanda:9092
-```
-
-Для подключения с хоста используй:
-
-```text
-localhost:19092
-```
-
-## Troubleshooting: playground_app role
-
-If `playground-service` fails with `Role "playground_app" does not exist`, use the fixed compose file from this archive and restart from clean volumes:
-
-```bash
-docker compose down -v --remove-orphans
-docker compose up --build
-```
-
-The `playground-migrate` container now bootstraps and verifies the runtime roles before applying migrations.
-
-## Playground migration note
-
-The secure playground schema is also mounted into `playground-postgres` as init scripts. Always run `docker compose down -v --remove-orphans` before switching stack archives so PostgreSQL re-runs `/docker-entrypoint-initdb.d` on a clean volume.
-
-To verify playground DB:
-
-```bash
-docker compose exec playground-postgres \
-  psql -U postgres -d playground \
-  -c "SELECT to_regnamespace('playground_internal'), to_regprocedure('playground_internal.ensure_user_workspace(uuid)'), to_regclass('task_data.employees');"
-```
-
-
-### Kafka consumer groups
-
-`task-progress-service` uses separate Kafka consumer groups for incoming topics:
-
-- `task-progress-service-playground` for `playground.execution.completed`;
-- `task-progress-service-analytics` for `analytics.skill_assessment.updated`.
-
-This avoids group rebalancing conflicts when the service consumes independent topics with separate readers.
+В dev-compose некоторые сервисы и БД могут быть проброшены на host для тестирования. Production/deploy-конфигурация должна публиковать наружу только gateway и необходимые внешние entrypoints.
