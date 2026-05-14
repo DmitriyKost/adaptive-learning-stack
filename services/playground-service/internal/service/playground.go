@@ -19,14 +19,21 @@ type ExecutionPublisher interface {
 }
 
 type PlaygroundUsecase struct {
-	workspaces WorkspaceStore
-	executor   *Executor
-	publisher  ExecutionPublisher
-	references TaskReferenceProvider
+	workspaces            WorkspaceStore
+	executor              *Executor
+	publisher             ExecutionPublisher
+	references            TaskReferenceProvider
+	returnReferenceResult bool
 }
 
-func NewPlaygroundUsecase(workspaces WorkspaceStore, executor *Executor, publisher ExecutionPublisher, references TaskReferenceProvider) *PlaygroundUsecase {
-	return &PlaygroundUsecase{workspaces: workspaces, executor: executor, publisher: publisher, references: references}
+func NewPlaygroundUsecase(workspaces WorkspaceStore, executor *Executor, publisher ExecutionPublisher, references TaskReferenceProvider, returnReferenceResult bool) *PlaygroundUsecase {
+	return &PlaygroundUsecase{
+		workspaces:            workspaces,
+		executor:              executor,
+		publisher:             publisher,
+		references:            references,
+		returnReferenceResult: returnReferenceResult,
+	}
 }
 
 func (u *PlaygroundUsecase) Execute(ctx context.Context, userID string, req domain.ExecuteRequest) (domain.ExecuteResponse, error) {
@@ -53,12 +60,17 @@ func (u *PlaygroundUsecase) Execute(ctx context.Context, userID string, req doma
 		return domain.ExecuteResponse{}, err
 	}
 
+	executionSuccess := userResult.Error == nil
+	isCorrectValue := false
+	isCorrect := &isCorrectValue
+
 	var referenceResult *domain.ExecuteResult
-	if userResult.Error == nil {
+	if executionSuccess {
 		referenceResult, err = u.executor.ExecuteReference(ctx, referenceQuery)
 		if err != nil {
 			return domain.ExecuteResponse{}, err
 		}
+		isCorrectValue = compareExecuteResults(userResult, referenceResult)
 	}
 
 	eventID, err := domain.NewUUID()
@@ -67,26 +79,35 @@ func (u *PlaygroundUsecase) Execute(ctx context.Context, userID string, req doma
 	}
 
 	createdAt := time.Now().UTC()
+	var responseReferenceResult *domain.ExecuteResult
+	if u.returnReferenceResult {
+		responseReferenceResult = referenceResult
+	}
+
 	response := domain.ExecuteResponse{
-		EventID:         eventID,
-		UserID:          userID,
-		TaskID:          req.TaskID,
-		UserResult:      userResult,
-		ReferenceResult: referenceResult,
-		CreatedAt:       createdAt,
+		EventID:          eventID,
+		UserID:           userID,
+		TaskID:           req.TaskID,
+		ExecutionSuccess: executionSuccess,
+		IsCorrect:        isCorrect,
+		UserResult:       userResult,
+		ReferenceResult:  responseReferenceResult,
+		CreatedAt:        createdAt,
 	}
 
 	event := domain.ExecutionEvent{
-		EventID:         eventID,
-		EventType:       "playground.execution.completed",
-		EventVersion:    1,
-		UserID:          userID,
-		TaskID:          req.TaskID,
-		UserQuery:       req.UserQuery,
-		ReferenceQuery:  referenceQuery,
-		UserResult:      userResult,
-		ReferenceResult: referenceResult,
-		CreatedAt:       createdAt,
+		EventID:          eventID,
+		EventType:        "playground.execution.completed",
+		EventVersion:     1,
+		UserID:           userID,
+		TaskID:           req.TaskID,
+		UserQuery:        req.UserQuery,
+		ReferenceQuery:   referenceQuery,
+		ExecutionSuccess: executionSuccess,
+		IsCorrect:        isCorrect,
+		UserResult:       userResult,
+		ReferenceResult:  referenceResult,
+		CreatedAt:        createdAt,
 	}
 	if err := u.publisher.PublishExecution(ctx, event); err != nil {
 		return domain.ExecuteResponse{}, err

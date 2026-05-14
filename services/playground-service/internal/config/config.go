@@ -14,6 +14,7 @@ type Config struct {
 	DatabaseURL           string
 	JWTSecret             string
 	TrustedGatewayHeaders bool
+	ReturnReferenceResult bool
 
 	KafkaBrokers          []string
 	KafkaClientID         string
@@ -40,6 +41,7 @@ func Load() (Config, error) {
 		DatabaseURL:             getEnv("DATABASE_URL", "postgres://playground_app:playground_app@localhost:5432/playground?sslmode=disable"),
 		JWTSecret:               getEnv("JWT_SECRET", "change-me-in-production"),
 		TrustedGatewayHeaders:   getBool("TRUSTED_GATEWAY_HEADERS", false),
+		ReturnReferenceResult:   getBool("RETURN_REFERENCE_RESULT", false),
 		KafkaBrokers:            splitCSV(getEnv("KAFKA_BROKERS", "localhost:9092")),
 		KafkaClientID:           getEnv("KAFKA_CLIENT_ID", "playground-service"),
 		KafkaExecutionTopic:     getEnv("KAFKA_EXECUTION_TOPIC", "playground.execution.completed"),

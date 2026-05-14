@@ -73,7 +73,7 @@ func main() {
 	}
 
 	tokenService := service.NewTokenService(cfg.JWTSecret)
-	playgroundUsecase := service.NewPlaygroundUsecase(workspaceRepo, executor, producer, taskRefs)
+	playgroundUsecase := service.NewPlaygroundUsecase(workspaceRepo, executor, producer, taskRefs, cfg.ReturnReferenceResult)
 
 	handler := httptransport.NewRouter(playgroundUsecase, tokenService, cfg.TrustedGatewayHeaders, log)
 

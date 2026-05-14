@@ -22,12 +22,14 @@ type ExecuteRequest struct {
 }
 
 type ExecuteResponse struct {
-	EventID         string         `json:"event_id"`
-	UserID          string         `json:"user_id"`
-	TaskID          string         `json:"task_id"`
-	UserResult      *ExecuteResult `json:"user_result"`
-	ReferenceResult *ExecuteResult `json:"reference_result,omitempty"`
-	CreatedAt       time.Time      `json:"created_at"`
+	EventID          string         `json:"event_id"`
+	UserID           string         `json:"user_id"`
+	TaskID           string         `json:"task_id"`
+	ExecutionSuccess bool           `json:"execution_success"`
+	IsCorrect        *bool          `json:"is_correct,omitempty"`
+	UserResult       *ExecuteResult `json:"user_result"`
+	ReferenceResult  *ExecuteResult `json:"reference_result,omitempty"`
+	CreatedAt        time.Time      `json:"created_at"`
 }
 
 type ExecuteResult struct {
@@ -51,14 +53,16 @@ type Workspace struct {
 }
 
 type ExecutionEvent struct {
-	EventID         string         `json:"event_id"`
-	EventType       string         `json:"event_type"`
-	EventVersion    int            `json:"event_version"`
-	UserID          string         `json:"user_id"`
-	TaskID          string         `json:"task_id"`
-	UserQuery       string         `json:"user_query"`
-	ReferenceQuery  string         `json:"reference_query,omitempty"`
-	UserResult      *ExecuteResult `json:"user_result"`
-	ReferenceResult *ExecuteResult `json:"reference_result,omitempty"`
-	CreatedAt       time.Time      `json:"created_at"`
+	EventID          string         `json:"event_id"`
+	EventType        string         `json:"event_type"`
+	EventVersion     int            `json:"event_version"`
+	UserID           string         `json:"user_id"`
+	TaskID           string         `json:"task_id"`
+	UserQuery        string         `json:"user_query"`
+	ReferenceQuery   string         `json:"reference_query,omitempty"`
+	ExecutionSuccess bool           `json:"execution_success"`
+	IsCorrect        *bool          `json:"is_correct,omitempty"`
+	UserResult       *ExecuteResult `json:"user_result"`
+	ReferenceResult  *ExecuteResult `json:"reference_result,omitempty"`
+	CreatedAt        time.Time      `json:"created_at"`
 }
