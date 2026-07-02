@@ -30,6 +30,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", s.health)
 	mux.HandleFunc("/ready", s.ready)
+	mux.HandleFunc("/internal/tasks/", s.internalTaskReference)
 
 	protected := http.NewServeMux()
 	protected.HandleFunc("/tasks", s.tasks)
@@ -74,6 +75,51 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 
+type taskComparisonPolicyResponse struct {
+	OrderSensitive bool `json:"order_sensitive"`
+}
+
+type taskReferenceResponse struct {
+	TaskID           string                       `json:"task_id"`
+	ReferenceSQL     string                       `json:"reference_sql"`
+	ComparisonPolicy taskComparisonPolicyResponse `json:"comparison_policy"`
+}
+
+func (s *Server) internalTaskReference(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/internal/tasks/")
+	path = strings.Trim(path, "/")
+	if !strings.HasSuffix(path, "/reference") {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	taskID := strings.TrimSuffix(path, "/reference")
+	taskID = strings.Trim(taskID, "/")
+	if taskID == "" {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	task, err := s.progress.GetTask(r.Context(), taskID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if strings.TrimSpace(task.ReferenceSQL) == "" {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, taskReferenceResponse{
+		TaskID:       task.ID,
+		ReferenceSQL: task.ReferenceSQL,
+		ComparisonPolicy: taskComparisonPolicyResponse{
+			OrderSensitive: task.OrderSensitive,
+		},
+	})
+}
+
 func (s *Server) tasks(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -111,9 +157,7 @@ func (s *Server) taskByID(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		taskID := strings.TrimSuffix(path, "/submit")
-		taskID = strings.Trim(taskID, "/")
-		s.submitTask(w, r, taskID)
+		writeJSON(w, http.StatusGone, errorResponse{Error: "legacy_submit_disabled"})
 		return
 	}
 
@@ -159,65 +203,6 @@ func (s *Server) generateHint(w http.ResponseWriter, r *http.Request, taskID str
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
-}
-
-type submitTaskRequest struct {
-	SubmittedSQL     string   `json:"submitted_sql"`
-	ExecutionSuccess bool     `json:"execution_success"`
-	IsCorrect        *bool    `json:"is_correct,omitempty"`
-	Columns          []string `json:"columns,omitempty"`
-	Rows             [][]any  `json:"rows,omitempty"`
-	ExpectedColumns  []string `json:"expected_columns,omitempty"`
-	ExpectedRows     [][]any  `json:"expected_rows,omitempty"`
-	ExecutionTimeMS  int64    `json:"execution_time_ms"`
-	RowCount         int      `json:"row_count"`
-	ErrorType        string   `json:"error_type,omitempty"`
-	ErrorMessage     string   `json:"error_message,omitempty"`
-	QueryHash        string   `json:"query_hash,omitempty"`
-	HintRequested    bool     `json:"hint_requested,omitempty"`
-	HintUsed         bool     `json:"hint_used,omitempty"`
-	HintID           string   `json:"hint_id,omitempty"`
-	HintType         string   `json:"hint_type,omitempty"`
-	HintsCount       int      `json:"hints_count,omitempty"`
-}
-
-func (s *Server) submitTask(w http.ResponseWriter, r *http.Request, taskID string) {
-	claims, ok := claimsFromContext(r.Context())
-	if !ok {
-		writeError(w, domain.ErrUnauthorized)
-		return
-	}
-	var req submitTaskRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, domain.ErrInvalidInput)
-		return
-	}
-	result, err := s.progress.SubmitAttempt(r.Context(), service.SubmitAttemptInput{
-		UserID:           claims.UserID,
-		TaskID:           taskID,
-		SubmittedSQL:     req.SubmittedSQL,
-		ExecutionSuccess: req.ExecutionSuccess,
-		IsCorrect:        req.IsCorrect,
-		Columns:          req.Columns,
-		Rows:             req.Rows,
-		ExpectedColumns:  req.ExpectedColumns,
-		ExpectedRows:     req.ExpectedRows,
-		ExecutionTimeMS:  req.ExecutionTimeMS,
-		RowCount:         req.RowCount,
-		ErrorType:        req.ErrorType,
-		ErrorMessage:     req.ErrorMessage,
-		QueryHash:        req.QueryHash,
-		HintRequested:    req.HintRequested,
-		HintUsed:         req.HintUsed,
-		HintID:           req.HintID,
-		HintType:         req.HintType,
-		HintsCount:       req.HintsCount,
-	})
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, result)
 }
 
 func (s *Server) progressMe(w http.ResponseWriter, r *http.Request) {

@@ -148,7 +148,6 @@ services:
       retries: 30
     volumes:
       - task-progress-postgres-data:/var/lib/postgresql/data
-      - ./services/task-progress-postgres/init:/docker-entrypoint-initdb.d:ro
 
   task-progress-migrate:
     image: postgres:16-alpine
@@ -160,15 +159,17 @@ services:
     volumes:
       - ./services/task-progress-service/migrations:/migrations:ro
     entrypoint: ["/bin/sh", "-ec"]
-    command: |
-      echo "Applying task-progress migrations"
-      psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f /migrations/000001_init.up.sql
-      psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f /migrations/000002_graph_thresholds.up.sql
-      psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f /migrations/000003_async_overrides_and_recommendations.up.sql
-      psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f /migrations/000004_hint_state.up.sql
-      echo "Verifying task-progress tables"
-      psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -tAc "SELECT to_regclass('public.skills')" | grep -q skills
-      psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -tAc "SELECT to_regclass('public.user_skills')" | grep -q user_skills
+    command:
+      - |
+        echo "Applying task-progress migrations"
+        for f in /migrations/*.up.sql; do
+          echo "Applying $$f"
+          psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$$f"
+        done
+        echo "Verifying task-progress tables"
+        psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -tAc "SELECT to_regclass('public.skills')" | grep -q skills
+        psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -tAc "SELECT to_regclass('public.user_skills')" | grep -q user_skills
+        psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -tAc "SELECT to_regclass('public.user_next_task_recommendations')" | grep -q user_next_task_recommendations
     restart: "no"
 
   clickhouse:

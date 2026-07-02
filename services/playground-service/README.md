@@ -1,217 +1,215 @@
 # playground-service
 
-Сервис безопасного выполнения SQL-запросов пользователя для SQL-тренажера.
+Сервис выполнения SQL пользователя и server-side автопроверки.
 
-Сервис не хранит прогресс пользователя. Он только:
+Он:
 
-- создает/поддерживает личный PostgreSQL schema/namespace пользователя;
-- выполняет пользовательский SQL в изолированной роли;
-- дает пользователю права на `SELECT/INSERT/UPDATE/DELETE/CREATE TABLE/DROP TABLE/TRUNCATE TABLE` только в его личном schema;
-- дает read-only доступ к общему schema `task_data` с данными заданий;
-- выполняет эталонный `reference_query` только в read-only режиме;
-- публикует событие выполнения в Kafka/Redpanda.
+- создаёт и поддерживает личную PostgreSQL schema пользователя;
+- выполняет user SQL в изолированной роли;
+- даёт read-only доступ к schema task_data;
+- запрашивает reference SQL и comparison policy у task-progress-service;
+- выполняет reference SQL read-only;
+- сравнивает user_result и reference_result внутри backend;
+- возвращает пользователю только user_result и verdict;
+- публикует internal event playground.execution.completed.
 
-## API
+Сервис не хранит learner model и не выбирает следующую задачу.
 
-- `GET /health`
-- `POST /execute`
-- `GET /playground/workspace`
-- `POST /playground/reset`
+## Public API
 
-Все endpoints, кроме `/health`, требуют авторизацию.
+    GET  /health
+    GET  /ready
+    POST /playground/execute
+    GET  /playground/workspace
+    POST /playground/reset
 
-По умолчанию сервис проверяет JWT access token, выпущенный `auth-service`. Также можно включить доверие к заголовкам API Gateway:
+Также может быть доступен alias:
 
-```env
-TRUSTED_GATEWAY_HEADERS=true
-```
+    POST /execute
 
-В этом режиме сервис принимает:
+## Auth
 
-```text
-X-User-ID
-X-User-Role
-```
+Все endpoints, кроме /health и /ready, требуют авторизацию.
 
-## POST /execute
+В gateway-mode сервис может доверять заголовкам:
 
-```json
-{
-  "task_id": "task-1",
-  "user_query": "SELECT * FROM products",
-  "reference_query": "SELECT * FROM products"
-}
-```
+    X-User-ID
+    X-User-Role
 
-`user_id` не передается в body. Он берется из JWT или из заголовка `X-User-ID`, чтобы клиент не мог выполнить запрос от имени другого пользователя.
+Эти заголовки должны выставляться gateway, а не клиентом напрямую.
 
-Ответ:
+## POST /playground/execute
 
-```json
-{
-  "event_id": "uuid",
-  "user_id": "uuid",
-  "task_id": "task-1",
-  "user_result": {
-    "columns": ["id", "name", "category", "price"],
-    "rows": [],
-    "rows_affected": 0,
-    "query_time_ms": 3,
-    "truncated": false
-  },
-  "reference_result": {
-    "columns": ["id", "name", "category", "price"],
-    "rows": [],
-    "rows_affected": 0,
-    "query_time_ms": 2,
-    "truncated": false
-  },
-  "created_at": "2026-01-01T00:00:00Z"
-}
-```
+Request:
 
-## Kafka/Redpanda event
+    {
+      "task_id": "00000000-0000-0000-0000-000000010001",
+      "user_query": "SELECT id, name FROM task_data.employees ORDER BY id;"
+    }
 
-Topic по умолчанию:
+Public request не содержит reference_query. Request body парсится strict decoder'ом:
 
-```env
-KAFKA_EXECUTION_TOPIC=playground.execution.completed
-```
+- неизвестные поля отклоняются;
+- trailing JSON после первого объекта отклоняется.
 
-Тип события:
+Перед выполнением user SQL сервис сначала валидирует task_id и получает reference context у task-progress-service.
 
-```text
-playground.execution.completed
-```
+Response:
 
-Событие содержит:
+    {
+      "event_id": "...",
+      "user_id": "...",
+      "task_id": "...",
+      "execution_success": true,
+      "is_correct": true,
+      "user_result": {
+        "columns": ["id", "name"],
+        "rows": [
+          {
+            "id": 1,
+            "name": "Ivan"
+          }
+        ],
+        "rows_affected": 1,
+        "query_time_ms": 2,
+        "truncated": false
+      },
+      "created_at": "..."
+    }
 
-- `event_id`
-- `event_type`
-- `event_version`
-- `user_id`
-- `task_id`
-- `user_query`
-- `reference_query`
-- `user_result`
-- `reference_result`
-- `created_at`
+Public response не содержит reference_sql и не содержит reference_result.
 
-`task-progress` может подписаться на этот topic и сравнить `user_result` с `reference_result`, сохранить попытку, обновить модель обучающегося и пересчитать траекторию.
+## Grading flow
 
-## Переменные окружения
+    POST /playground/execute
+    -> get task reference from task-progress internal endpoint
+    -> ensure user workspace
+    -> execute user SQL
+    -> execute reference SQL read-only
+    -> compare results using comparison policy
+    -> return public verdict
+    -> publish Kafka event with internal grading context
 
-```env
-ENV=local
-HTTP_ADDR=:8080
-DATABASE_URL=postgres://playground_app:playground_app@localhost:5432/playground?sslmode=disable
-JWT_SECRET=change-me-in-production
-TRUSTED_GATEWAY_HEADERS=false
-KAFKA_BROKERS=localhost:9092
-KAFKA_CLIENT_ID=playground-service
-KAFKA_EXECUTION_TOPIC=playground.execution.completed
-KAFKA_AUTO_CREATE_TOPICS=true
-EXECUTION_TIMEOUT=5s
-STATEMENT_TIMEOUT=3s
-LOCK_TIMEOUT=1s
-MAX_RESULT_ROWS=500
-TASK_SCHEMA=task_data
-INTERNAL_SCHEMA=playground_internal
-READONLY_ROLE=playground_readonly
-```
+## Comparison policy
 
-## Миграции
+task-progress-service владеет policy проверки задачи.
 
-Миграция `000001_secure_playground.up.sql` должна запускаться от роли с правами `CREATEROLE`, потому что она создает:
+Internal reference response содержит:
 
-- `playground_app` — runtime login для сервиса;
-- `playground_readonly` — read-only роль для общего schema `task_data`;
-- динамические роли `playground_user_<user_uuid>` для пользователей;
-- динамические schema `u_<user_uuid>` для пользовательских данных.
+    {
+      "task_id": "...",
+      "reference_sql": "SELECT ...",
+      "comparison_policy": {
+        "order_sensitive": true
+      }
+    }
 
-Пример:
+Если order_sensitive=false, строки сравниваются без учёта порядка.
 
-```bash
-createdb playground
-migrate -path ./migrations -database "postgres://postgres:postgres@localhost:5432/playground?sslmode=disable" up
-```
+Если order_sensitive=true, порядок строк должен совпасть.
 
-После миграции сам сервис должен подключаться как `playground_app`:
+Truncated результаты не засчитываются как correct.
 
-```env
-DATABASE_URL=postgres://playground_app:playground_app@localhost:5432/playground?sslmode=disable
-```
+## Kafka event
 
-## Модель безопасности БД
+Topic:
 
-Общие данные заданий хранятся в schema:
+    playground.execution.completed
 
-```text
-task_data
-```
+Internal event содержит reference_query и reference_result, потому что они нужны task-progress-service и analytics-service.
 
-Пользовательские данные хранятся в schema вида:
+Пример event payload:
 
-```text
-u_<user_uuid_without_hyphens>
-```
+    {
+      "event_id": "...",
+      "event_type": "playground.execution.completed",
+      "event_version": 1,
+      "user_id": "...",
+      "task_id": "...",
+      "user_query": "SELECT ...",
+      "reference_query": "SELECT ...",
+      "execution_success": true,
+      "is_correct": true,
+      "user_result": {
+        "columns": ["id"],
+        "rows": [
+          {
+            "id": 1
+          }
+        ],
+        "truncated": false
+      },
+      "reference_result": {
+        "columns": ["id"],
+        "rows": [
+          {
+            "id": 1
+          }
+        ],
+        "truncated": false
+      },
+      "created_at": "..."
+    }
 
-Для каждого пользователя создается отдельная PostgreSQL-роль:
+Это internal event, не public HTTP response.
 
-```text
-playground_user_<user_uuid_without_hyphens>
-```
+## Environment
 
-При выполнении пользовательского SQL сервис делает внутри транзакции:
+    ENV=local
+    HTTP_ADDR=:8080
+    DATABASE_URL=postgres://playground_app:playground_app@playground-postgres:5432/playground?sslmode=disable
+    JWT_SECRET=change-me-in-production
+    TRUSTED_GATEWAY_HEADERS=false
 
-```sql
-SET LOCAL ROLE "playground_user_<uuid>";
-SET LOCAL search_path = "u_<uuid>", task_data, public;
-```
+    TASK_PROGRESS_BASE_URL=http://task-progress-service:8082
+    TASK_REFERENCE_TIMEOUT=3s
+    RETURN_REFERENCE_RESULT=false
 
-В результате:
+    KAFKA_BROKERS=redpanda:9092
+    KAFKA_CLIENT_ID=playground-service
+    KAFKA_EXECUTION_TOPIC=playground.execution.completed
+    KAFKA_AUTO_CREATE_TOPICS=true
 
-- unqualified `CREATE TABLE`, `INSERT`, `UPDATE`, `DELETE` работают в личном schema пользователя;
-- `SELECT` из `task_data` разрешен;
-- изменение `task_data` запрещено правами PostgreSQL;
-- доступ к schema другого пользователя запрещен.
+    EXECUTION_TIMEOUT=5s
+    STATEMENT_TIMEOUT=3s
+    LOCK_TIMEOUT=1s
+    MAX_RESULT_ROWS=500
 
-## Запуск
+    TASK_SCHEMA=task_data
+    INTERNAL_SCHEMA=playground_internal
+    READONLY_ROLE=playground_readonly
 
-```bash
-go mod tidy
-go run ./main.go
-```
+RETURN_REFERENCE_RESULT=true допускается только для local debug. Для frontend-safe режима должно быть false.
 
-## Пример с JWT
+## DB security model
 
-```bash
-curl -X POST http://localhost:8080/execute \
-  -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "task_id":"task-1",
-    "user_query":"SELECT * FROM products",
-    "reference_query":"SELECT * FROM products"
-  }'
-```
+Общие данные заданий находятся в schema:
 
-## Пример через API Gateway headers
+    task_data
 
-```bash
-TRUSTED_GATEWAY_HEADERS=true go run ./main.go
+Пользовательская schema:
 
-curl -X POST http://localhost:8080/execute \
-  -H 'X-User-ID: 6a38a380-236f-4f36-a692-10e01b3954db' \
-  -H 'X-User-Role: student' \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "task_id":"task-1",
-    "user_query":"CREATE TABLE notes(id bigserial primary key, text text)",
-    "reference_query":"SELECT * FROM products"
-  }'
-```
+    u_<user_uuid_without_hyphens>
 
-## Docker Compose example
+Пользовательская роль:
 
-В архиве есть `docker-compose.example.yml` с PostgreSQL, Redpanda и сервисом. Перед запуском сервиса все равно нужно применить миграцию к PostgreSQL от роли `postgres`, чтобы создать runtime role `playground_app`.
+    playground_user_<user_uuid_without_hyphens>
+
+User SQL выполняется с локальным search_path:
+
+    SET LOCAL ROLE "playground_user_<uuid>";
+    SET LOCAL search_path = "u_<uuid>", task_data, public;
+
+Пользователь может работать со своей schema. task_data доступен read-only. Schema других пользователей недоступны.
+
+## Local commands
+
+    go test ./...
+    go run ./main.go
+
+Проверка через gateway:
+
+    curl -sS -X POST http://localhost:8080/playground/execute \
+      -H "Authorization: Bearer $ACCESS_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"task_id":"00000000-0000-0000-0000-000000010001","user_query":"SELECT id, name FROM task_data.employees ORDER BY id;"}' | jq .

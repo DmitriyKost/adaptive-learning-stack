@@ -1,0 +1,2 @@
+ALTER TABLE tasks
+  ADD COLUMN IF NOT EXISTS order_sensitive BOOLEAN NOT NULL DEFAULT false;

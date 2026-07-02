@@ -38,7 +38,7 @@ func main() {
 
 	repo := repository.New(db)
 	ebb := service.NewEbbinghaus(service.EbbinghausConfig{MinHalfLifeDays: cfg.MinHalfLifeDays, MaxHalfLifeDays: cfg.MaxHalfLifeDays})
-	plannerCfg := service.PlannerConfig{DefaultGraphCode: cfg.DefaultGraphCode, MasteryThreshold: cfg.MasteryThreshold, PrerequisiteThreshold: cfg.PrerequisiteThreshold, RecallThreshold: cfg.RecallThreshold, RecommendationWaitTimeout: cfg.RecommendationWaitTimeout}
+	plannerCfg := service.PlannerConfig{DefaultGraphCode: cfg.DefaultGraphCode, MasteryThreshold: cfg.MasteryThreshold, PrerequisiteThreshold: cfg.PrerequisiteThreshold, RecallThreshold: cfg.RecallThreshold, RecommendationWaitTimeout: cfg.RecommendationWaitTimeout, NextTaskTTL: cfg.NextTaskTTL, NextTaskRefreshTimeout: cfg.NextTaskRefreshTimeout}
 
 	var publisher service.EventPublisher = service.NoopPublisher{}
 	if cfg.KafkaEnabled {
@@ -53,7 +53,7 @@ func main() {
 	server := httptransport.NewServer(progress, planner, repo, tokens, cfg.AllowGatewayHeaders, cfg.DefaultGraphCode, log)
 
 	if cfg.KafkaEnabled {
-		analyticsHandler := service.NewAnalyticsEventHandler(repo, publisher, log)
+		analyticsHandler := service.NewAnalyticsEventHandler(repo, planner, publisher, log)
 		analyticsConsumer := kafkatransport.NewAnalyticsSkillAssessmentConsumer(cfg.KafkaBrokers, cfg.TopicAnalyticsSkillAssessmentUpdated, cfg.KafkaGroupID+"-analytics", cfg.KafkaClientID+"-analytics", analyticsHandler, log)
 		defer func() { _ = analyticsConsumer.Close() }()
 		go func() {

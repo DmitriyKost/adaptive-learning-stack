@@ -1,0 +1,77 @@
+# Docker Compose override: attach the external adaptive_sql_diploma intelligence module.
+#
+# Recommended local layout:
+#   workspace/
+#     adaptive-learning-stack/
+#     adaptive_sql_diploma/
+#
+# This file runs the real local Hugging Face base model + PEFT LoRA in a Docker
+# container. Ollama is not used here.
+#
+# Required host paths, usually configured in .env next to this file:
+#   ADAPTIVE_SQL_DIPLOMA_ROOT        — path to the external adaptive_sql_diploma repository, default ../adaptive_sql_diploma
+#   ADAPTIVE_SQL_DIPLOMA_MODELS_HOST — local Hugging Face snapshot of the base model, default ../adaptive_sql_diploma/models/base
+#   ADAPTIVE_SQL_DIPLOMA_LORA_HOST   — LoRA adapter directory, default ../adaptive_sql_diploma/lora_sql_mastery
+#
+# CPU run, mostly for small local models:
+#   docker compose -f docker-compose.yml -f docker-compose.with-adaptive-sql-adaptive_sql_diploma.yml up --build
+#
+# NVIDIA GPU run for the provided Llama 3.1 8B 4-bit LoRA:
+#   docker compose -f docker-compose.yml -f docker-compose.with-adaptive-sql-adaptive_sql_diploma.yml \
+#     -f docker-compose.with-adaptive-sql-adaptive_sql_diploma.gpu.yml up --build
+
+services:
+  intelligence:
+    build:
+      context: ${ADAPTIVE_SQL_DIPLOMA_ROOT:-../adaptive_sql_diploma}
+      dockerfile: Dockerfile
+    image: adaptive-sql-intelligence:local-lora
+    container_name: adaptive-sql-intelligence
+    ports:
+      - "${INTELLIGENCE_HOST_PORT:-8090}:8080"
+    env_file:
+      - path: ${ADAPTIVE_SQL_DIPLOMA_ROOT:-../adaptive_sql_diploma}/.env
+        required: false
+    environment:
+      ANALYTICS_LLM_BASE_MODEL_PATH: /app/models/base
+      ANALYTICS_LLM_LORA_PATH: /app/lora_sql_mastery
+      ANALYTICS_LLM_LOAD_IN_4BIT: ${LLM_LOAD_IN_4BIT:-true}
+      ANALYTICS_LLM_DEVICE_MAP: ${LLM_DEVICE_MAP:-auto}
+      ANALYTICS_LLM_TORCH_DTYPE: ${LLM_TORCH_DTYPE:-auto}
+      ANALYTICS_LLM_BNB_4BIT_COMPUTE_DTYPE: ${LLM_BNB_4BIT_COMPUTE_DTYPE:-float16}
+      ANALYTICS_LLM_BNB_4BIT_QUANT_TYPE: ${LLM_BNB_4BIT_QUANT_TYPE:-nf4}
+      ANALYTICS_LLM_BNB_4BIT_USE_DOUBLE_QUANT: ${LLM_BNB_4BIT_USE_DOUBLE_QUANT:-true}
+      ANALYTICS_LLM_MAX_NEW_TOKENS: ${LLM_MAX_NEW_TOKENS:-512}
+      ANALYTICS_LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.2}
+      HF_HOME: /app/.cache/huggingface
+      TRANSFORMERS_CACHE: /app/.cache/huggingface/transformers
+    volumes:
+      - ${ADAPTIVE_SQL_DIPLOMA_MODELS_HOST:-../adaptive_sql_diploma/models/base}:/app/models/base:ro
+      - ${ADAPTIVE_SQL_DIPLOMA_LORA_HOST:-../adaptive_sql_diploma/lora_sql_mastery}:/app/lora_sql_mastery:ro
+      - adaptive_sql_diploma-hf-cache:/app/.cache/huggingface
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/ready', timeout=5)\""]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
+    restart: unless-stopped
+
+  analytics-service:
+    environment:
+      INTELLIGENCE_BASE_URL: http://intelligence:8080
+      INTELLIGENCE_READY_PATH: /ready
+      INTELLIGENCE_EVALUATE_PATH: /v1/assessments/evaluate
+      INTELLIGENCE_HINT_PATH: /v1/hints/generate
+      INTELLIGENCE_HTTP_TIMEOUT: 600s
+      HINT_GENERATION_TIMEOUT: 600s
+    depends_on:
+      clickhouse-migrate:
+        condition: service_completed_successfully
+      redpanda-init:
+        condition: service_completed_successfully
+      intelligence:
+        condition: service_healthy
+
+volumes:
+  adaptive_sql_diploma-hf-cache:

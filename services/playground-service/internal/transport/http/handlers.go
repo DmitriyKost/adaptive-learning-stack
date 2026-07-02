@@ -2,6 +2,7 @@ package httptransport
 
 import (
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 
@@ -25,7 +26,13 @@ func (s *Server) execute(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req domain.ExecuteRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		writeError(w, domain.ErrInvalidInput)
 		return
 	}

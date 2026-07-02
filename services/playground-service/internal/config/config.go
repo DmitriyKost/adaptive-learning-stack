@@ -14,6 +14,7 @@ type Config struct {
 	DatabaseURL           string
 	JWTSecret             string
 	TrustedGatewayHeaders bool
+	ReturnReferenceResult bool
 
 	KafkaBrokers          []string
 	KafkaClientID         string
@@ -28,26 +29,32 @@ type Config struct {
 	TaskSchema     string
 	InternalSchema string
 	ReadonlyRole   string
+
+	TaskProgressBaseURL     string
+	TaskProgressHTTPTimeout time.Duration
 }
 
 func Load() (Config, error) {
 	cfg := Config{
-		Env:                   getEnv("ENV", "local"),
-		HTTPAddr:              getEnv("HTTP_ADDR", ":8080"),
-		DatabaseURL:           getEnv("DATABASE_URL", "postgres://playground_app:playground_app@localhost:5432/playground?sslmode=disable"),
-		JWTSecret:             getEnv("JWT_SECRET", "change-me-in-production"),
-		TrustedGatewayHeaders: getBool("TRUSTED_GATEWAY_HEADERS", false),
-		KafkaBrokers:          splitCSV(getEnv("KAFKA_BROKERS", "localhost:9092")),
-		KafkaClientID:         getEnv("KAFKA_CLIENT_ID", "playground-service"),
-		KafkaExecutionTopic:   getEnv("KAFKA_EXECUTION_TOPIC", "playground.execution.completed"),
-		KafkaAutoCreateTopics: getBool("KAFKA_AUTO_CREATE_TOPICS", true),
-		ExecutionTimeout:      5 * time.Second,
-		StatementTimeout:      3 * time.Second,
-		LockTimeout:           time.Second,
-		MaxResultRows:         500,
-		TaskSchema:            getEnv("TASK_SCHEMA", "task_data"),
-		InternalSchema:        getEnv("INTERNAL_SCHEMA", "playground_internal"),
-		ReadonlyRole:          getEnv("READONLY_ROLE", "playground_readonly"),
+		Env:                     getEnv("ENV", "local"),
+		HTTPAddr:                getEnv("HTTP_ADDR", ":8080"),
+		DatabaseURL:             getEnv("DATABASE_URL", "postgres://playground_app:playground_app@localhost:5432/playground?sslmode=disable"),
+		JWTSecret:               getEnv("JWT_SECRET", "change-me-in-production"),
+		TrustedGatewayHeaders:   getBool("TRUSTED_GATEWAY_HEADERS", false),
+		ReturnReferenceResult:   getBool("RETURN_REFERENCE_RESULT", false),
+		KafkaBrokers:            splitCSV(getEnv("KAFKA_BROKERS", "localhost:9092")),
+		KafkaClientID:           getEnv("KAFKA_CLIENT_ID", "playground-service"),
+		KafkaExecutionTopic:     getEnv("KAFKA_EXECUTION_TOPIC", "playground.execution.completed"),
+		KafkaAutoCreateTopics:   getBool("KAFKA_AUTO_CREATE_TOPICS", true),
+		ExecutionTimeout:        5 * time.Second,
+		StatementTimeout:        3 * time.Second,
+		LockTimeout:             time.Second,
+		MaxResultRows:           500,
+		TaskSchema:              getEnv("TASK_SCHEMA", "task_data"),
+		InternalSchema:          getEnv("INTERNAL_SCHEMA", "playground_internal"),
+		ReadonlyRole:            getEnv("READONLY_ROLE", "playground_readonly"),
+		TaskProgressBaseURL:     getEnv("TASK_PROGRESS_BASE_URL", "http://localhost:8083"),
+		TaskProgressHTTPTimeout: 3 * time.Second,
 	}
 
 	if cfg.JWTSecret == "" && !cfg.TrustedGatewayHeaders {
@@ -69,6 +76,12 @@ func Load() (Config, error) {
 	}
 	if cfg.MaxResultRows <= 0 {
 		return Config{}, fmt.Errorf("MAX_RESULT_ROWS must be positive")
+	}
+	if cfg.TaskProgressHTTPTimeout, err = getDuration("TASK_PROGRESS_HTTP_TIMEOUT", cfg.TaskProgressHTTPTimeout); err != nil {
+		return Config{}, err
+	}
+	if cfg.TaskProgressBaseURL == "" {
+		return Config{}, fmt.Errorf("TASK_PROGRESS_BASE_URL is required")
 	}
 	if len(cfg.KafkaBrokers) == 0 {
 		return Config{}, fmt.Errorf("KAFKA_BROKERS is required")

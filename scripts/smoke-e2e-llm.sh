@@ -2,21 +2,16 @@
 set -euo pipefail
 
 BASE="${BASE:-http://localhost:8080}"
-OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://localhost:11434}"
-OLLAMA_MODEL="${OLLAMA_MODEL:-llama3.1:8b-instruct-q6_K}"
+INTELLIGENCE_BASE="${INTELLIGENCE_BASE:-http://localhost:8090}"
 
 CLICKHOUSE_CONTAINER="${CLICKHOUSE_CONTAINER:-adaptive-clickhouse}"
 TASK_PROGRESS_PG_CONTAINER="${TASK_PROGRESS_PG_CONTAINER:-adaptive-task-progress-postgres}"
 
-TASK_ID="${TASK_ID:-00000000-0000-0000-0000-000000010001}"
 PASSWORD="${PASSWORD:-password123}"
-EMAIL="${EMAIL:-student+ollama-e2e-$(date +%s)@example.com}"
+EMAIL="${EMAIL:-student+smoke-coldstart-$(date +%s)@example.com}"
 
-MAX_WAIT_SECONDS="${MAX_WAIT_SECONDS:-180}"
-POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-3}"
-
-USER_QUERY="${USER_QUERY:-SELECT id, name FROM task_data.employees ORDER BY id;}"
-REFERENCE_QUERY="${REFERENCE_QUERY:-SELECT id, name FROM task_data.employees ORDER BY id;}"
+MAX_WAIT_SECONDS="${MAX_WAIT_SECONDS:-600}"
+POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-1}"
 
 log() {
   printf '\n\033[1;34m==>\033[0m %s\n' "$*"
@@ -24,6 +19,10 @@ log() {
 
 ok() {
   printf '\033[1;32mOK\033[0m %s\n' "$*"
+}
+
+warn() {
+  printf '\033[1;33mWARN\033[0m %s\n' "$*"
 }
 
 fail() {
@@ -38,67 +37,6 @@ need() {
 need curl
 need jq
 need docker
-
-log "Checking gateway readiness"
-READY_JSON="$(curl -fsS "$BASE/ready" || true)"
-printf '%s\n' "$READY_JSON" | jq .
-
-READY_STATUS="$(printf '%s\n' "$READY_JSON" | jq -r '.status // empty')"
-[[ "$READY_STATUS" == "ready" ]] || fail "gateway is not ready"
-
-ok "gateway ready"
-
-log "Warming Ollama model: $OLLAMA_MODEL"
-curl -fsS "$OLLAMA_BASE_URL/api/generate" \
-  -H 'Content-Type: application/json' \
-  -d "$(jq -nc \
-    --arg model "$OLLAMA_MODEL" \
-    '{model:$model, stream:false, keep_alive:"30m"}')" \
-  | jq '.done, .done_reason?'
-
-OLLAMA_PS="$(curl -fsS "$OLLAMA_BASE_URL/api/ps")"
-printf '%s\n' "$OLLAMA_PS" | jq .
-
-printf '%s\n' "$OLLAMA_PS" \
-  | jq -e --arg model "$OLLAMA_MODEL" '
-      [.models[]?.name] | any(. == $model)
-    ' >/dev/null \
-  || fail "Ollama model is not loaded according to /api/ps"
-
-ok "Ollama model loaded"
-
-log "Registering fresh user: $EMAIL"
-REGISTER_RESPONSE="$(curl -fsS -X POST "$BASE/auth/register" \
-  -H 'Content-Type: application/json' \
-  -d "$(jq -nc \
-    --arg email "$EMAIL" \
-    --arg password "$PASSWORD" \
-    '{email:$email,password:$password}')")"
-
-TOKEN="$(printf '%s\n' "$REGISTER_RESPONSE" | jq -r '.access_token')"
-USER_ID="$(printf '%s\n' "$REGISTER_RESPONSE" | jq -r '.user.id')"
-
-[[ "$TOKEN" != "null" && -n "$TOKEN" ]] || fail "no access token returned"
-[[ "$USER_ID" != "null" && -n "$USER_ID" ]] || fail "no user id returned"
-
-ok "user_id=$USER_ID"
-
-log "Executing playground task: $TASK_ID"
-EXEC_RESPONSE="$(curl -fsS -X POST "$BASE/playground/execute" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d "$(jq -nc \
-    --arg task_id "$TASK_ID" \
-    --arg user_query "$USER_QUERY" \
-    --arg reference_query "$REFERENCE_QUERY" \
-    '{task_id:$task_id,user_query:$user_query,reference_query:$reference_query}')")"
-
-printf '%s\n' "$EXEC_RESPONSE" | jq .
-
-EVENT_ID="$(printf '%s\n' "$EXEC_RESPONSE" | jq -r '.event_id')"
-[[ "$EVENT_ID" != "null" && -n "$EVENT_ID" ]] || fail "no event_id returned"
-
-ok "event_id=$EVENT_ID"
 
 ch_query() {
   docker exec "$CLICKHOUSE_CONTAINER" clickhouse-client \
@@ -115,10 +53,255 @@ pg_query() {
     -tAc "$1"
 }
 
-log "Waiting for LLM analysis and learner model update"
+get_next_task() {
+  local token="$1"
+  local body_file="$2"
+
+  curl -sS \
+    -o "$body_file" \
+    -w '%{http_code}' \
+    -H "Authorization: Bearer $token" \
+    "$BASE/tasks/next" || true
+}
+
+solve_cold_start_task() {
+  local task_json="$1"
+
+  local task_id
+  local title
+  local skills
+
+  task_id="$(printf '%s\n' "$task_json" | jq -r '.task.id')"
+  title="$(printf '%s\n' "$task_json" | jq -r '.task.title')"
+  skills="$(printf '%s\n' "$task_json" | jq -r '[.task.skills[]?.skill_code] | sort | join(",")')"
+
+  case "$skills" in
+    "select")
+      printf '%s\n' 'SELECT id, name FROM task_data.employees ORDER BY id;'
+      ;;
+    *)
+      cat >&2 <<MSG
+Unsupported cold-start task for this smoke test.
+
+task_id=$task_id
+title=$title
+skills=$skills
+
+The smoke test intentionally solves the task returned by /tasks/next.
+Currently it only knows how to solve the starter SELECT task.
+MSG
+      exit 1
+      ;;
+  esac
+}
+
+assert_no_reference_sql_in_public_json() {
+  local json="$1"
+  local label="$2"
+
+  if printf '%s\n' "$json" | jq -e '.. | objects | select(has("reference_sql"))' >/dev/null; then
+    printf '%s\n' "$json" | jq '.. | objects | select(has("reference_sql"))' >&2
+    fail "$label leaks reference_sql"
+  fi
+
+  ok "$label does not leak reference_sql"
+}
+
+log "Checking readiness"
+
+BASE_READY="$(curl -sS "$BASE/ready")"
+printf '%s\n' "$BASE_READY" | jq .
+printf '%s\n' "$BASE_READY" | jq -e '.status == "ready"' >/dev/null || fail "gateway is not ready"
+
+INT_READY="$(curl -sS "$INTELLIGENCE_BASE/ready")"
+printf '%s\n' "$INT_READY" | jq .
+printf '%s\n' "$INT_READY" | jq -e '.status == "ready"' >/dev/null || fail "intelligence is not ready"
+
+log "Prewarming intelligence model if needed"
+
+LOADED="$(printf '%s\n' "$INT_READY" | jq -r '.loaded // true')"
+
+if [[ "$LOADED" == "false" ]]; then
+  WARMUP_BODY="$(mktemp)"
+  WARMUP_ARGS=(-sS -X POST "$INTELLIGENCE_BASE/warmup" -H 'Content-Type: application/json' -d '{}')
+
+  if [[ -n "${INTELLIGENCE_API_KEY:-}" ]]; then
+    WARMUP_ARGS+=(-H "X-API-Key: $INTELLIGENCE_API_KEY")
+  fi
+
+  WARMUP_HTTP_CODE="$(curl "${WARMUP_ARGS[@]}" -o "$WARMUP_BODY" -w '%{http_code}' || true)"
+  cat "$WARMUP_BODY" | jq . || cat "$WARMUP_BODY"
+  rm -f "$WARMUP_BODY"
+
+  [[ "$WARMUP_HTTP_CODE" == "200" ]] || fail "intelligence warmup failed with HTTP $WARMUP_HTTP_CODE"
+fi
+
+ok "intelligence model loaded"
+
+log "Registering fresh user: $EMAIL"
+
+REGISTER_RESPONSE="$(curl -fsS -X POST "$BASE/auth/register" \
+  -H 'Content-Type: application/json' \
+  -d "$(jq -nc \
+    --arg email "$EMAIL" \
+    --arg password "$PASSWORD" \
+    '{email:$email,password:$password}')")"
+
+TOKEN="$(printf '%s\n' "$REGISTER_RESPONSE" | jq -r '.access_token')"
+USER_ID="$(printf '%s\n' "$REGISTER_RESPONSE" | jq -r '.user.id')"
+
+[[ "$TOKEN" != "null" && -n "$TOKEN" ]] || fail "no access token returned"
+[[ "$USER_ID" != "null" && -n "$USER_ID" ]] || fail "no user id returned"
+
+ok "user_id=$USER_ID"
+
+log "Requesting cold-start task from /tasks/next"
+
+NEXT_BODY_FILE="$(mktemp)"
+NEXT_HTTP_CODE="$(get_next_task "$TOKEN" "$NEXT_BODY_FILE")"
+
+if [[ "$NEXT_HTTP_CODE" != "200" ]]; then
+  printf 'Unexpected cold-start /tasks/next response, http=%s\n' "$NEXT_HTTP_CODE" >&2
+  cat "$NEXT_BODY_FILE" >&2
+  printf '\n' >&2
+  rm -f "$NEXT_BODY_FILE"
+  fail "new user should receive initial task synchronously"
+fi
+
+COLD_START_NEXT_JSON="$(cat "$NEXT_BODY_FILE")"
+rm -f "$NEXT_BODY_FILE"
+
+printf '%s\n' "$COLD_START_NEXT_JSON" | jq '{
+  selected_task: {
+    id: .task.id,
+    title: .task.title,
+    difficulty: .task.difficulty,
+    skills: [.task.skills[]? | {skill_code, weight}]
+  },
+  planner_decision: {
+    score,
+    reason,
+    repeat_mode,
+    graph_code,
+    professional_track
+  }
+}'
+
+assert_no_reference_sql_in_public_json "$COLD_START_NEXT_JSON" "/tasks/next cold-start response"
+
+TASK_ID="$(printf '%s\n' "$COLD_START_NEXT_JSON" | jq -r '.task.id')"
+TASK_TITLE="$(printf '%s\n' "$COLD_START_NEXT_JSON" | jq -r '.task.title')"
+USER_QUERY="$(solve_cold_start_task "$COLD_START_NEXT_JSON")"
+
+[[ "$TASK_ID" != "null" && -n "$TASK_ID" ]] || fail "cold-start task has no id"
+
+ok "cold-start task_id=$TASK_ID title=$TASK_TITLE"
+
+log "Verifying persisted cold-start recommendation"
+
+docker exec "$TASK_PROGRESS_PG_CONTAINER" psql \
+  -U task_progress \
+  -d task_progress \
+  -x \
+  -c "
+SELECT
+  user_id,
+  status,
+  task_id,
+  score,
+  reason,
+  repeat_mode,
+  source_analysis_run_id,
+  expires_at,
+  updated_at
+FROM user_next_task_recommendations
+WHERE user_id = '$USER_ID'::uuid;
+"
+
+CACHED_TASK_ID="$(pg_query "
+SELECT COALESCE(task_id::text, '')
+FROM user_next_task_recommendations
+WHERE user_id = '$USER_ID'::uuid
+  AND status = 'ready';
+" | tr -d '[:space:]')"
+
+[[ "$CACHED_TASK_ID" == "$TASK_ID" ]] || fail "cold-start recommendation was not persisted correctly"
+
+ok "cold-start recommendation persisted"
+
+log "Checking public /tasks and /tasks/{id} do not leak reference_sql"
+
+TASKS_JSON="$(curl -fsS "$BASE/tasks" \
+  -H "Authorization: Bearer $TOKEN")"
+
+assert_no_reference_sql_in_public_json "$TASKS_JSON" "/tasks response"
+
+TASK_JSON="$(curl -fsS "$BASE/tasks/$TASK_ID" \
+  -H "Authorization: Bearer $TOKEN")"
+
+assert_no_reference_sql_in_public_json "$TASK_JSON" "/tasks/{id} response"
+
+log "Executing returned cold-start task"
+
+printf 'task_id=%s\n' "$TASK_ID"
+printf 'user_query=%s\n' "$USER_QUERY"
+
+EXEC_RESPONSE="$(curl -fsS -X POST "$BASE/playground/execute" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "$(jq -nc \
+    --arg task_id "$TASK_ID" \
+    --arg user_query "$USER_QUERY" \
+    '{task_id:$task_id,user_query:$user_query}')")"
+
+printf '%s\n' "$EXEC_RESPONSE" | jq .
+
+EVENT_ID="$(printf '%s\n' "$EXEC_RESPONSE" | jq -r '.event_id')"
+EXECUTION_SUCCESS="$(printf '%s\n' "$EXEC_RESPONSE" | jq -r '.execution_success')"
+IS_CORRECT="$(printf '%s\n' "$EXEC_RESPONSE" | jq -r '.is_correct')"
+
+[[ "$EVENT_ID" != "null" && -n "$EVENT_ID" ]] || fail "no event_id returned"
+[[ "$EXECUTION_SUCCESS" == "true" ]] || fail "execution_success is not true"
+[[ "$IS_CORRECT" == "true" ]] || fail "is_correct is not true"
+
+if printf '%s\n' "$EXEC_RESPONSE" | jq -e 'has("reference_result")' >/dev/null; then
+  fail "/playground/execute leaked reference_result"
+fi
+
+ok "playground execute returned correct verdict without reference_result"
+
+log "Calling /tasks/next immediately after submit; pending is expected"
+
+PENDING_BODY_FILE="$(mktemp)"
+PENDING_HTTP_CODE="$(get_next_task "$TOKEN" "$PENDING_BODY_FILE")"
+
+if [[ "$PENDING_HTTP_CODE" == "202" || "$PENDING_HTTP_CODE" == "409" ]]; then
+  PENDING_ERROR="$(jq -r '.error // empty' "$PENDING_BODY_FILE")"
+  if [[ "$PENDING_ERROR" == "analysis_pending" ]]; then
+    ok "/tasks/next returns analysis_pending while LLM update is running"
+    jq . "$PENDING_BODY_FILE"
+  else
+    cat "$PENDING_BODY_FILE" >&2
+    rm -f "$PENDING_BODY_FILE"
+    fail "/tasks/next returned 409 but not analysis_pending"
+  fi
+elif [[ "$PENDING_HTTP_CODE" == "200" ]]; then
+  warn "/tasks/next already returned ready; pipeline completed before first pending check"
+  cat "$PENDING_BODY_FILE" | jq .
+else
+  printf 'Unexpected /tasks/next response after submit, http=%s\n' "$PENDING_HTTP_CODE" >&2
+  cat "$PENDING_BODY_FILE" >&2
+  rm -f "$PENDING_BODY_FILE"
+  exit 1
+fi
+
+rm -f "$PENDING_BODY_FILE"
+
+log "Waiting for LLM analysis, learner model update and persisted next task"
 
 DEADLINE=$((SECONDS + MAX_WAIT_SECONDS))
 RUN_ID=""
+NEXT_TASK_ID=""
 
 while (( SECONDS < DEADLINE )); do
   RUN_ID="$(ch_query "
@@ -146,12 +329,23 @@ WHERE user_id = '$USER_ID'
 FORMAT TSV
 " | tr -d '[:space:]')"
 
-  printf 'run_id=%s version_count=%s analytics_updates=%s\n' \
+  NEXT_ROW="$(pg_query "
+SELECT status || '|' || COALESCE(task_id::text, '')
+FROM user_next_task_recommendations
+WHERE user_id = '$USER_ID'::uuid;
+" | tr -d '[:space:]')"
+
+  NEXT_STATUS="${NEXT_ROW%%|*}"
+  NEXT_TASK_ID="${NEXT_ROW#*|}"
+
+  printf 'run_id=%s version_count=%s analytics_updates=%s next_status=%s next_task=%s\n' \
     "${RUN_ID:-none}" \
     "${VERSION_COUNT:-0}" \
-    "${ANALYTICS_UPDATE_COUNT:-0}"
+    "${ANALYTICS_UPDATE_COUNT:-0}" \
+    "${NEXT_STATUS:-none}" \
+    "${NEXT_TASK_ID:-none}"
 
-  if [[ -n "$RUN_ID" && "${VERSION_COUNT:-0}" -gt 0 && "${ANALYTICS_UPDATE_COUNT:-0}" -gt 0 ]]; then
+  if [[ -n "$RUN_ID" && "${VERSION_COUNT:-0}" -gt 0 && "${ANALYTICS_UPDATE_COUNT:-0}" -gt 0 && "$NEXT_STATUS" == "ready" && -n "$NEXT_TASK_ID" && "$NEXT_TASK_ID" != "$TASK_ID" ]]; then
     break
   fi
 
@@ -161,167 +355,23 @@ done
 [[ -n "$RUN_ID" ]] || fail "LLM analysis did not complete within ${MAX_WAIT_SECONDS}s"
 [[ "${VERSION_COUNT:-0}" -gt 0 ]] || fail "learner model version was not updated by LLM"
 [[ "${ANALYTICS_UPDATE_COUNT:-0}" -gt 0 ]] || fail "no analytics-service learner model update log found"
+[[ "$NEXT_STATUS" == "ready" ]] || fail "persisted next task is not ready"
+[[ -n "$NEXT_TASK_ID" ]] || fail "persisted next task id is empty"
 
 ok "LLM run completed: $RUN_ID"
+ok "persisted post-submit next_task_id=$NEXT_TASK_ID"
 
-log "Proof 1: ClickHouse llm_analysis_runs"
-ch_query "
-SELECT
-  status,
-  model_version,
-  prompt_version,
-  source_task_id,
-  source_attempt_id,
-  completed_at
-FROM llm_analysis_runs
-WHERE run_id = '$RUN_ID'
-FORMAT PrettyCompact
-"
+log "Fetching final /tasks/next; should return persisted post-submit recommendation"
 
-log "Proof 2: ClickHouse skill_assessment_logs"
-ch_query "
-SELECT
-  skill_code,
-  mastery_score,
-  confidence,
-  reason,
-  created_at
-FROM skill_assessment_logs
-WHERE analysis_run_id = '$RUN_ID'
-ORDER BY created_at DESC
-FORMAT PrettyCompact
-"
+FINAL_NEXT_JSON="$(curl -fsS "$BASE/tasks/next" \
+  -H "Authorization: Bearer $TOKEN")"
 
-log "Proof 3: Postgres user_skills"
-docker exec "$TASK_PROGRESS_PG_CONTAINER" psql \
-  -U task_progress \
-  -d task_progress \
-  -x \
-  -c "
-SELECT
-  s.code AS skill_code,
-  us.mastery_score,
-  us.confidence,
-  us.attempts_count,
-  us.success_count,
-  us.updated_at
-FROM user_skills us
-JOIN skills s ON s.id = us.skill_id
-WHERE us.user_id = '$USER_ID'::uuid
-ORDER BY s.code;
-"
-
-log "Proof 4: Postgres user_skill_assessment_versions"
-docker exec "$TASK_PROGRESS_PG_CONTAINER" psql \
-  -U task_progress \
-  -d task_progress \
-  -x \
-  -c "
-SELECT
-  s.code AS skill_code,
-  v.last_analysis_run_id,
-  v.model_version,
-  v.prompt_version,
-  v.updated_at
-FROM user_skill_assessment_versions v
-JOIN skills s ON s.id = v.skill_id
-WHERE v.user_id = '$USER_ID'::uuid
-ORDER BY v.updated_at DESC;
-"
-
-log "Proof 5: ClickHouse learner_model_update_logs"
-ch_query "
-SELECT
-  source,
-  skill_code,
-  old_mastery_score,
-  new_mastery_score,
-  old_confidence,
-  new_confidence,
-  analysis_run_id,
-  created_at
-FROM learner_model_update_logs
-WHERE user_id = '$USER_ID'
-ORDER BY created_at DESC
-LIMIT 10
-FORMAT PrettyCompact
-"
-
-log "Final API progress"
-curl -fsS "$BASE/progress/me" \
-  -H "Authorization: Bearer $TOKEN" \
-  | jq '{
-      completed_tasks,
-      total_attempts,
-      analysis_state,
-      skills: [.skills[] | {
-        skill_code,
-        mastery_score,
-        confidence,
-        attempts_count,
-        success_count,
-        updated_at
-      }],
-      recommended_skills
-    }'
-
-log "Requesting next task from planner"
-
-NEXT_BODY_FILE="$(mktemp)"
-trap 'rm -f "$NEXT_BODY_FILE"' EXIT
-
-NEXT_HTTP_CODE=""
-DEADLINE=$((SECONDS + MAX_WAIT_SECONDS))
-
-while (( SECONDS < DEADLINE )); do
-  NEXT_HTTP_CODE="$(curl -sS \
-    -o "$NEXT_BODY_FILE" \
-    -w '%{http_code}' \
-    -H "Authorization: Bearer $TOKEN" \
-    "$BASE/tasks/next" || true)"
-
-  if [[ "$NEXT_HTTP_CODE" == "200" ]]; then
-    break
-  fi
-
-  if [[ "$NEXT_HTTP_CODE" == "409" ]]; then
-    ERROR_CODE="$(jq -r '.error // empty' "$NEXT_BODY_FILE")"
-
-    if [[ "$ERROR_CODE" == "analysis_pending" ]]; then
-      RETRY_AFTER="$(jq -r '.retry_after_seconds // empty' "$NEXT_BODY_FILE")"
-      [[ "$RETRY_AFTER" =~ ^[0-9]+$ ]] || RETRY_AFTER="$POLL_INTERVAL_SECONDS"
-
-      printf 'planner says analysis_pending, retrying after %ss\n' "$RETRY_AFTER"
-      jq . "$NEXT_BODY_FILE"
-      sleep "$RETRY_AFTER"
-      continue
-    fi
-  fi
-
-  printf 'Unexpected /tasks/next response, http=%s\n' "$NEXT_HTTP_CODE" >&2
-  cat "$NEXT_BODY_FILE" >&2
-  exit 1
-done
-
-[[ "$NEXT_HTTP_CODE" == "200" ]] || fail "planner did not return next task within ${MAX_WAIT_SECONDS}s"
-
-NEXT_TASK_JSON="$(cat "$NEXT_BODY_FILE")"
-NEXT_TASK_ID="$(printf '%s\n' "$NEXT_TASK_JSON" | jq -r '.task.id // empty')"
-
-[[ -n "$NEXT_TASK_ID" ]] || fail "planner returned no task.id"
-
-ok "planner returned next_task_id=$NEXT_TASK_ID"
-
-printf '%s\n' "$NEXT_TASK_JSON" | jq '{
+printf '%s\n' "$FINAL_NEXT_JSON" | jq '{
   selected_task: {
     id: .task.id,
     title: .task.title,
     difficulty: .task.difficulty,
-    description: .task.description,
-    skills: [.task.skills[]? | {
-      skill_code,
-      weight
-    }]
+    skills: [.task.skills[]? | {skill_code, weight}]
   },
   planner_decision: {
     score,
@@ -340,72 +390,114 @@ printf '%s\n' "$NEXT_TASK_JSON" | jq '{
   ]
 }'
 
-if [[ "$NEXT_TASK_ID" == "$TASK_ID" ]]; then
-  REPEAT_MODE="$(printf '%s\n' "$NEXT_TASK_JSON" | jq -r '.repeat_mode')"
-  printf '\033[1;33mWARN\033[0m planner returned the same task_id=%s repeat_mode=%s\n' "$NEXT_TASK_ID" "$REPEAT_MODE"
-fi
+assert_no_reference_sql_in_public_json "$FINAL_NEXT_JSON" "/tasks/next final response"
 
-log "Explaining why the selected task fits the current learner model"
+FINAL_TASK_ID="$(printf '%s\n' "$FINAL_NEXT_JSON" | jq -r '.task.id')"
+[[ "$FINAL_TASK_ID" == "$NEXT_TASK_ID" ]] || fail "/tasks/next returned $FINAL_TASK_ID, expected persisted $NEXT_TASK_ID"
 
-PROGRESS_JSON="$(curl -fsS "$BASE/progress/me" \
-  -H "Authorization: Bearer $TOKEN")"
+log "Proof: ClickHouse llm_analysis_runs"
 
-jq -n \
-  --argjson next "$NEXT_TASK_JSON" \
-  --argjson progress "$PROGRESS_JSON" '
-  {
-    next_task: {
-      id: $next.task.id,
-      title: $next.task.title,
-      difficulty: $next.task.difficulty,
-      score: $next.score,
-      reason: $next.reason,
-      repeat_mode: $next.repeat_mode
-    },
-    task_skill_match: [
-      $next.task.skills[]? as $ts |
-      {
-        skill_code: $ts.skill_code,
-        task_weight: $ts.weight,
-        learner_skill: (
-          $progress.skills[]?
-          | select(.skill_code == $ts.skill_code)
-          | {
-              mastery_score,
-              confidence,
-              effective_mastery,
-              retention,
-              mastery_threshold,
-              graph_priority_weight,
-              attempts_count,
-              success_count
-            }
-        ),
-        llm_recommendation: (
-          $next.recommended_skills[]?
-          | select(.skill_code == $ts.skill_code)
-          | {
-              priority,
-              recommended_action,
-              reason
-            }
-        )
-      }
-    ],
-    all_current_skills: [
-      $progress.skills[]? | {
-        skill_code,
-        mastery_score,
-        confidence,
-        effective_mastery,
-        mastery_threshold,
-        graph_priority_weight,
-        attempts_count,
-        success_count
-      }
-    ]
-  }'
+ch_query "
+SELECT
+  status,
+  model_version,
+  prompt_version,
+  source_task_id,
+  source_attempt_id,
+  started_at,
+  completed_at,
+  dateDiff('millisecond', started_at, completed_at) AS llm_duration_ms
+FROM llm_analysis_runs
+WHERE run_id = '$RUN_ID'
+FORMAT PrettyCompact
+"
 
-ok "E2E smoke test passed"
-printf '\nUSER_ID=%s\nEMAIL=%s\nEVENT_ID=%s\nRUN_ID=%s\nNEXT_TASK_ID=%s\n' \
-  "$USER_ID" "$EMAIL" "$EVENT_ID" "$RUN_ID" "$NEXT_TASK_ID"
+log "Proof: ClickHouse task_attempt_logs reference SQL"
+
+ch_query "
+SELECT
+  submitted_sql,
+  reference_sql,
+  is_correct,
+  created_at
+FROM task_attempt_logs
+WHERE user_id = '$USER_ID'
+ORDER BY created_at DESC
+LIMIT 1
+FORMAT PrettyCompact
+"
+
+log "Proof: Postgres user_skills"
+
+docker exec "$TASK_PROGRESS_PG_CONTAINER" psql \
+  -U task_progress \
+  -d task_progress \
+  -x \
+  -c "
+SELECT
+  s.code AS skill_code,
+  us.mastery_score,
+  us.confidence,
+  us.attempts_count,
+  us.success_count,
+  us.updated_at
+FROM user_skills us
+JOIN skills s ON s.id = us.skill_id
+WHERE us.user_id = '$USER_ID'::uuid
+ORDER BY s.code;
+"
+
+log "Proof: Postgres user_skill_assessment_versions"
+
+docker exec "$TASK_PROGRESS_PG_CONTAINER" psql \
+  -U task_progress \
+  -d task_progress \
+  -x \
+  -c "
+SELECT
+  s.code AS skill_code,
+  v.last_analysis_run_id,
+  v.model_version,
+  v.prompt_version,
+  v.updated_at
+FROM user_skill_assessment_versions v
+JOIN skills s ON s.id = v.skill_id
+WHERE v.user_id = '$USER_ID'::uuid
+ORDER BY v.updated_at DESC;
+"
+
+log "Proof: Postgres user_next_task_recommendations"
+
+docker exec "$TASK_PROGRESS_PG_CONTAINER" psql \
+  -U task_progress \
+  -d task_progress \
+  -x \
+  -c "
+SELECT
+  user_id,
+  status,
+  task_id,
+  score,
+  reason,
+  repeat_mode,
+  source_analysis_run_id,
+  expires_at,
+  updated_at
+FROM user_next_task_recommendations
+WHERE user_id = '$USER_ID'::uuid;
+"
+
+log "Proof: reference SQL reached internal analytics events"
+
+ch_query "
+SELECT
+  countIf(position(payload, 'reference_sql') > 0) AS reference_payloads
+FROM raw_events
+WHERE user_id = '$USER_ID'
+FORMAT PrettyCompact
+"
+
+ok "Cold-start E2E smoke test passed"
+
+printf '\nUSER_ID=%s\nEMAIL=%s\nEVENT_ID=%s\nRUN_ID=%s\nINITIAL_TASK_ID=%s\nNEXT_TASK_ID=%s\n' \
+  "$USER_ID" "$EMAIL" "$EVENT_ID" "$RUN_ID" "$TASK_ID" "$NEXT_TASK_ID"

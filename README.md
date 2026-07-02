@@ -1,214 +1,238 @@
-# Adaptive Learning local stack
+# Adaptive Learning Stack
 
-Общий локальный стенд для микросервисов:
+Локальный dev-стенд для адаптивного SQL-курса.
 
-- `api-gateway`
-- `auth-service`
-- `playground-service`
-- `task-progress-service`
-- `analytics-service`
-- PostgreSQL для `auth-service`
-- PostgreSQL для `playground-service`
-- PostgreSQL для `task-progress-service`
-- ClickHouse для `analytics-service`
-- Redpanda как Kafka-брокер
+Стек состоит из:
+
+- `api-gateway` — единая публичная точка входа;
+- `auth-service` — регистрация, login, refresh, JWT;
+- `playground-service` — безопасное выполнение SQL пользователя и server-side автопроверка;
+- `task-progress-service` — задачи, прогресс, learner model, граф навыков, выбор следующей задачи;
+- `analytics-service` — event log, ClickHouse, подготовка контекста и интеграция с внешним intelligence service;
+- `intelligence` из внешнего модуля `adaptive_sql_diploma` — LLM/LoRA/Ollama-интеллект;
+- PostgreSQL для auth/playground/task-progress;
+- ClickHouse для analytics;
+- Redpanda как Kafka-compatible broker.
 
 ## Запуск
 
-```bash
-docker compose up --build
-```
+Обычный dev-запуск:
 
-После первого запуска будут выполнены миграции:
+    docker compose up -d --build
 
-- `auth-migrate` применяет миграции auth-сервиса;
-- `playground-migrate` создает защищенную playground-БД, роли, `task_data` и демо-данные;
-- `task-progress-migrate` создает графы, навыки, задачи и состояние прогресса;
-- `clickhouse-migrate` создает аналитические таблицы в ClickHouse.
+Запуск с внешним модулем `adaptive_sql_diploma`:
 
-Gateway доступен на:
+    docker compose \
+      -f docker-compose.yml \
+      -f docker-compose.with-adaptive-sql-adaptive_sql_diploma.yml \
+      up -d --build
 
-```text
-http://localhost:8080
-```
+Запуск с GPU override:
 
-Прямые debug-порты сервисов:
+    docker compose \
+      -f docker-compose.yml \
+      -f docker-compose.with-adaptive-sql-adaptive_sql_diploma.yml \
+      -f docker-compose.with-adaptive-sql-adaptive_sql_diploma.gpu.yml \
+      up -d --build
 
-```text
-auth-service:          http://localhost:8081
-playground-service:    http://localhost:8082
-task-progress-service: http://localhost:8083
-analytics-service:     http://localhost:8084
-```
+Полный reset dev-данных:
 
-## Проверка готовности
+    docker compose \
+      -f docker-compose.yml \
+      -f docker-compose.with-adaptive-sql-adaptive_sql_diploma.yml \
+      -f docker-compose.with-adaptive-sql-adaptive_sql_diploma.gpu.yml \
+      down -v --remove-orphans
 
-```bash
-curl http://localhost:8080/health
-curl http://localhost:8080/ready
-```
+## Основной public API flow
 
-## Быстрый smoke-test
+Frontend работает только через gateway:
 
-Регистрация:
+    http://localhost:8080
 
-```bash
-curl -s -X POST http://localhost:8080/auth/register \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"student@example.com","password":"password123"}'
-```
+Новый пользователь:
 
-Логин:
+    POST /auth/register
+    GET  /tasks/next
 
-```bash
-TOKEN=$(curl -s -X POST http://localhost:8080/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"student@example.com","password":"password123"}' \
-  | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+`GET /tasks/next` для нового пользователя сразу возвращает стартовую задачу. После успешного решения задачи следующий выбор становится асинхронным:
 
-echo "$TOKEN"
-```
+    POST /playground/execute
+    GET  /tasks/next
 
-Получить следующую задачу:
+Если LLM-анализ ещё идёт, `/tasks/next` возвращает:
 
-```bash
-curl -s http://localhost:8080/tasks/next \
-  -H "Authorization: Bearer $TOKEN"
-```
+    HTTP/1.1 202 Accepted
+    Retry-After: 5
 
-Выполнить SQL через playground напрямую:
+Тело ответа:
 
-```bash
-curl -s -X POST http://localhost:8080/playground/execute \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "task_id":"00000000-0000-0000-0000-000000010001",
-    "user_query":"SELECT id, name FROM task_data.employees ORDER BY id;",
-    "reference_query":"SELECT id, name FROM task_data.employees ORDER BY id;"
-  }'
-```
+    {
+      "status": "pending",
+      "error": "analysis_pending",
+      "retry_after_seconds": 5,
+      "analysis_state": {
+        "status": "pending"
+      }
+    }
 
-После события `playground.execution.completed` сервис `task-progress` проверит результат и отправит события в аналитику. После успешного решения `/tasks/next` может вернуть `409 analysis_pending` до получения LLM-рекомендаций от analytics или до истечения soft timeout.
+Когда следующая задача готова:
 
+    HTTP/1.1 200 OK
 
-## Запуск с внешним интеллектуальным модулем (`diploma`)
+    {
+      "task": {
+        "id": "...",
+        "title": "...",
+        "description": "...",
+        "difficulty": "easy",
+        "skills": [
+          { "skill_code": "select", "weight": 1 }
+        ]
+      },
+      "reason": "...",
+      "score": 1.23,
+      "graph_code": "core_sql",
+      "professional_track": "core",
+      "repeat_mode": false,
+      "recommended_skills": []
+    }
 
-В этом архиве `adaptive-learning-stack/` и `diploma/` лежат рядом, поэтому Linux/Void-запуск не требует Windows-путей:
+## Выполнение SQL
 
-```bash
-cd adaptive-learning-stack
-cp .env.example .env   # необязательно, только если хотите менять пути/порты
-```
+Публичный request:
 
-Для быстрого smoke-теста можно использовать Ollama вместо Hugging Face base + LoRA. В `.env.example` уже стоит:
+    POST /playground/execute
 
-```dotenv
-LLM_PROVIDER=ollama
-OLLAMA_BASE_URL=http://host.docker.internal:11434
-OLLAMA_MODEL=llama3.1:8b-instruct-q6_K
-```
+    {
+      "task_id": "00000000-0000-0000-0000-000000010001",
+      "user_query": "SELECT id, name FROM task_data.employees ORDER BY id;"
+    }
 
-На Linux/Void Ollama на хосте должен слушать не только `127.0.0.1`, иначе контейнер `intelligence` его не увидит. Для локального теста:
+Клиент не передаёт `reference_query`. Если поле `reference_query` или любое другое неизвестное поле передано, request отклоняется.
 
-```bash
-OLLAMA_HOST=0.0.0.0:11434 ollama serve
-ollama pull llama3.1:8b-instruct-q6_K
-```
+Публичный response:
 
-Затем запускайте стек:
+    {
+      "event_id": "...",
+      "user_id": "...",
+      "task_id": "...",
+      "execution_success": true,
+      "is_correct": true,
+      "user_result": {
+        "columns": ["id", "name"],
+        "rows": [
+          { "id": 1, "name": "Ivan" }
+        ],
+        "rows_affected": 1,
+        "query_time_ms": 2,
+        "truncated": false
+      },
+      "created_at": "2026-05-14T19:29:44Z"
+    }
 
-```bash
-docker compose -f docker-compose.yml -f docker-compose.with-diploma.yml up --build
-```
+Публичный response не содержит `reference_sql` и не содержит `reference_result`.
 
-Если нужен исходный LoRA-режим, поставьте `LLM_PROVIDER=local`, положите базовую Hugging Face-модель в `../diploma/models/base` или переопределите путь через `DIPLOMA_MODELS_HOST` в `.env`. LoRA уже ожидается в `../diploma/lora_sql_mastery`.
+## Reference SQL и автопроверка
 
-После запуска:
+`reference_sql` хранится в `task-progress-service` и доступен только внутреннему backend flow.
 
-```bash
-curl http://localhost:8090/health     # Python intelligence напрямую
-curl http://localhost:8090/ready      # проверка backend-провайдера: Ollama или local model
-curl http://localhost:8084/health     # analytics-service
-curl http://localhost:8080/health     # api-gateway
-```
+Путь проверки:
 
-`analytics-service` всегда использует внешний intelligence HTTP API:
+    frontend
+    -> POST /playground/execute { task_id, user_query }
+    -> playground-service запрашивает internal task reference у task-progress-service
+    -> playground-service выполняет user SQL
+    -> playground-service выполняет reference SQL read-only
+    -> playground-service сравнивает результаты по comparison policy
+    -> playground-service публикует playground.execution.completed
+    -> task-progress-service обновляет learner model
+    -> analytics-service запускает LLM analysis
+    -> task-progress-service фиксирует следующую задачу
 
-```text
-INTELLIGENCE_BASE_URL=http://intelligence:8080
-INTELLIGENCE_READY_PATH=/ready
-INTELLIGENCE_HTTP_TIMEOUT=600s
-HINT_GENERATION_TIMEOUT=600s
-```
+`task-progress-service` владеет policy проверки задачи. Сейчас поддерживается:
 
-Если запускаете Python-модуль отдельно на хосте, оставьте основной `docker-compose.yml` и задайте для `analytics-service` `INTELLIGENCE_BASE_URL` на адрес, доступный из контейнера. Для Linux обычно удобнее поднимать `intelligence` в той же compose-сети через `docker-compose.with-diploma.yml`, а не использовать `host.docker.internal`.
+    {
+      "comparison_policy": {
+        "order_sensitive": true
+      }
+    }
 
-## Перезапуск с чистыми данными
+Если `order_sensitive=false`, строки сравниваются без учёта порядка. Если `order_sensitive=true`, порядок строк является частью ответа.
 
-```bash
-docker compose down -v
-```
+## Отключённый legacy endpoint
 
-Затем снова:
+Старый endpoint:
 
-```bash
-docker compose up --build
-```
+    POST /tasks/{id}/submit
 
-## Важные настройки
+отключён и возвращает:
 
-Все env-файлы лежат в `env/`:
+    HTTP/1.1 410 Gone
 
-- `auth-service.env`
-- `playground-service.env`
-- `task-progress-service.env`
-- `analytics-service.env`
-- `api-gateway.env`
+    { "error": "legacy_submit_disabled" }
 
-Общий `JWT_SECRET` должен совпадать в `auth-service`, `api-gateway`, `task-progress-service` и `playground-service`.
+Единственный публичный submit path — `POST /playground/execute`.
 
-В compose используется внутренний Kafka broker address:
+## Проверки
 
-```text
-redpanda:9092
-```
+Главный smoke-test:
 
-Для подключения с хоста используй:
+    MAX_WAIT_SECONDS=600 ./scripts/smoke-e2e-llm.sh
 
-```text
-localhost:19092
-```
+Contract/security check:
 
-## Troubleshooting: playground_app role
+    MAX_WAIT_SECONDS=600 ./scripts/checks/api-contract-check.sh
 
-If `playground-service` fails with `Role "playground_app" does not exist`, use the fixed compose file from this archive and restart from clean volumes:
+Проверка order-sensitive задач:
 
-```bash
-docker compose down -v --remove-orphans
-docker compose up --build
-```
+    ./scripts/checks/order-sensitive-check.sh
 
-The `playground-migrate` container now bootstraps and verifies the runtime roles before applying migrations.
+Benchmark ожидания следующей задачи:
 
-## Playground migration note
+    RUNS=5 \
+    POLL_INTERVAL_SECONDS=0.2 \
+    MAX_WAIT_SECONDS=600 \
+    ./scripts/checks/benchmark-next-task-wait.sh
 
-The secure playground schema is also mounted into `playground-postgres` as init scripts. Always run `docker compose down -v --remove-orphans` before switching stack archives so PostgreSQL re-runs `/docker-entrypoint-initdb.d` on a clean volume.
+## Intelligence service
 
-To verify playground DB:
+При запуске с `docker-compose.with-adaptive-sql-adaptive_sql_diploma.yml` `analytics-service` вызывает внешний Python intelligence service:
 
-```bash
-docker compose exec playground-postgres \
-  psql -U postgres -d playground \
-  -c "SELECT to_regnamespace('playground_internal'), to_regprocedure('playground_internal.ensure_user_workspace(uuid)'), to_regclass('task_data.employees');"
-```
+    GET  /ready
+    POST /v1/assessments/evaluate
+    POST /v1/hints/generate
 
+Основные переменные:
 
-### Kafka consumer groups
+    INTELLIGENCE_BASE_URL=http://intelligence:8080
+    INTELLIGENCE_EVALUATE_PATH=/v1/assessments/evaluate
+    INTELLIGENCE_HINT_PATH=/v1/hints/generate
+    INTELLIGENCE_READY_PATH=/ready
+    INTELLIGENCE_HTTP_TIMEOUT=600s
+    INTELLIGENCE_INCLUDE_CAREER=false
 
-`task-progress-service` uses separate Kafka consumer groups for incoming topics:
+Проверка:
 
-- `task-progress-service-playground` for `playground.execution.completed`;
-- `task-progress-service-analytics` for `analytics.skill_assessment.updated`.
+    curl -sS http://localhost:8090/ready | jq .
+    curl -sS http://localhost:8084/ready | jq .
+    curl -sS http://localhost:8080/ready | jq .
 
-This avoids group rebalancing conflicts when the service consumes independent topics with separate readers.
+## Миграции task-progress
+
+Миграции применяются compose job'ом `task-progress-migrate` по `*.up.sql`.
+
+Текущая структура:
+
+    000001_init.up.sql
+    000002_graph_thresholds.up.sql
+    000003_async_overrides_and_recommendations.up.sql
+    000004_hint_state.up.sql
+    000005_persisted_next_task.up.sql
+    000006_task_comparison_policy.up.sql
+    000007_seed_sql_tasks.up.sql
+
+Задачи seed'ятся отдельной миграцией `000007_seed_sql_tasks.up.sql`.
+
+## Dev notes
+
+В dev-compose некоторые сервисы и БД могут быть проброшены на host для тестирования. Production/deploy-конфигурация должна публиковать наружу только gateway и необходимые внешние entrypoints.

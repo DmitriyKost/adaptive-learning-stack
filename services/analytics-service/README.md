@@ -1,202 +1,160 @@
 # analytics-service
 
-Сервис аналитики для адаптивного SQL-курса. Он соответствует текущей архитектуре `task-progress-service v5`: получает события из Kafka/Redpanda, пишет raw и структурированные логи в ClickHouse, агрегирует контекст выполнения задачи и публикует ответное событие `analytics.skill_assessment.updated` для разблокировки выбора следующей задачи в `task-progress`.
+Сервис аналитики и LLM/intelligence integration.
 
-## Внешний модуль интеллекта (Python, adaptive-sql-diploma)
+Он:
 
-`analytics-service` всегда вызывает внешний intelligence HTTP API и не имеет локального fallback-клиента.
+- читает Kafka events от task-progress-service;
+- пишет raw и структурированные события в ClickHouse;
+- собирает context для внешнего intelligence service;
+- вызывает /v1/assessments/evaluate;
+- сохраняет request/response analysis runs;
+- публикует analytics.skill_assessment.updated;
+- генерирует подсказки через /v1/hints/generate.
 
-1. Поднимите сервис из репозитория **adaptive-sql-diploma** (`uvicorn app.main:app`, см. его README), при необходимости задайте `ANALYTICS_API_KEY`.
-2. В `analytics-service` задайте `INTELLIGENCE_BASE_URL` (например `http://127.0.0.1:8080`, `http://host.docker.internal:8090` из контейнера или `http://intelligence:8080` в compose-сети), тот же секрет в `INTELLIGENCE_API_KEY`, что и у Python.
-3. Пути по умолчанию: `INTELLIGENCE_READY_PATH=/ready`, `INTELLIGENCE_EVALUATE_PATH=/v1/assessments/evaluate`, `INTELLIGENCE_HINT_PATH=/v1/hints/generate`. Таймаут: `INTELLIGENCE_HTTP_TIMEOUT` (по умолчанию 600s). Карьера в запросе оценки: `INTELLIGENCE_INCLUDE_CAREER=true`.
+Локальный mock-intelligence режим не является основным контрактом. Для полного E2E нужен внешний intelligence service.
 
-Реализация клиента: `internal/service/http_intelligence.go`.
+## External intelligence service
 
-## Роль сервиса
+Ожидаемые endpoints:
 
-`task-progress` хранит только оперативное состояние модели обучающегося: текущие mastery/confidence, статусы задач, активный reference graph, user-specific overrides и последнее состояние ожидания аналитики. `analytics-service` хранит log-like часть модели:
+    GET  /ready
+    POST /v1/assessments/evaluate
+    POST /v1/hints/generate
 
-- все входящие события в `raw_events`;
-- все попытки решения задач с SQL, ошибками, временем выполнения и подсказками;
-- события успешного выполнения с `graph_state`;
-- логи выбора задачи `task.recommended`;
-- логи изменения модели `learner_model.updated`;
-- prepared context для внешнего интеллектуального модуля;
-- request/response внешнего интеллектуального модуля;
-- оценки mastery по тегам;
-- рекомендации тегов;
-- карьерные рекомендации.
+Основные env:
 
-## Входящие Kafka topics
+    INTELLIGENCE_BASE_URL=http://intelligence:8080
+    INTELLIGENCE_API_KEY=
+    INTELLIGENCE_READY_PATH=/ready
+    INTELLIGENCE_EVALUATE_PATH=/v1/assessments/evaluate
+    INTELLIGENCE_HINT_PATH=/v1/hints/generate
+    INTELLIGENCE_HTTP_TIMEOUT=600s
+    INTELLIGENCE_INCLUDE_CAREER=false
+    HINT_GENERATION_TIMEOUT=600s
 
-```text
-TASK_CHECKED=task.checked
-TASK_COMPLETED=task.completed
-TASK_RECOMMENDED=task.recommended
-LEARNER_MODEL_UPDATED=learner_model.updated
-```
+Если INTELLIGENCE_BASE_URL не задан, сервис не должен считаться ready.
 
-Сервис коммитит Kafka offset только после успешной записи в ClickHouse и, для `task.completed`, после публикации `analytics.skill_assessment.updated`. Если обработка падает, сообщение не коммитится и Redpanda/Kafka сможет доставить его повторно.
+## Kafka input
 
-## Исходящие Kafka topics
+    task.checked
+    task.completed
+    task.recommended
+    learner_model.updated
 
-```text
-analytics.skill_assessment.updated
-analytics.career_recommendation.created
-```
+Сервис коммитит offset только после успешной обработки. Для task.completed обработка включает вызов external intelligence и публикацию analytics.skill_assessment.updated.
 
-Главное исходящее событие для `task-progress`:
+## Kafka output
 
-```json
-{
-  "event_type": "analytics.skill_assessment.updated",
-  "user_id": "...",
-  "source": "analytics-service/intelligence",
-  "graph_code": "DA",
-  "professional_track": "DA",
-  "source_task_id": "...",
-  "source_attempt_id": "...",
-  "observed_until": "2026-05-11T12:00:00Z",
-  "assessment_mode": "merge",
-  "analysis": {
-    "analysis_run_id": "...",
-    "model_version": "sql-intelligence-v1",
-    "prompt_version": "sql-mastery-context-v1",
-    "seed": 42,
-    "temperature": 0
-  },
-  "user_graph_overlay": {
-    "graph_code": "DA",
-    "professional_track": "DA",
-    "skills": [
-      {
-        "skill_code": "group_by",
-        "priority_weight": 1.4,
-        "mastery_threshold": 0.78,
-        "reason": "user-specific overlay from latest LLM tag recommendation"
-      }
-    ]
-  },
-  "recommended_skills": [
+    analytics.skill_assessment.updated
+    analytics.career_recommendation.created
+    analytics.hint.generated
+
+Основное событие:
+
     {
-      "skill_code": "group_by",
-      "priority": 0.91,
-      "recommended_action": "remediate",
-      "reason": "gap=0.30, forgetting=0.12, threshold=0.80"
+      "event_type": "analytics.skill_assessment.updated",
+      "user_id": "...",
+      "source": "analytics-service/intelligence",
+      "graph_code": "core_sql",
+      "professional_track": "core",
+      "source_task_id": "...",
+      "source_attempt_id": "...",
+      "observed_until": "...",
+      "assessment_mode": "merge",
+      "analysis": {
+        "analysis_run_id": "...",
+        "model_version": "sql-intelligence-v1",
+        "prompt_version": "sql-mastery-context-v1"
+      },
+      "user_graph_overlay": {
+        "graph_code": "core_sql",
+        "professional_track": "core",
+        "skills": []
+      },
+      "recommended_skills": [],
+      "skill_scores": []
     }
-  ],
-  "skill_scores": [
-    {
-      "skill_code": "group_by",
-      "mastery_score": 0.72,
-      "confidence": 0.73,
-      "components": {
-        "correctness": 0.5,
-        "independence": 0.75,
-        "efficiency": 0.82
-      }
-    }
-  ]
-}
-```
 
-`recommended_skills` отправляется как полный snapshot. `task-progress v5` заменяет предыдущие рекомендации пользователя для активного графа этим набором.
-
-## Обработка `task.completed`
-
-Полный pipeline:
-
-1. `task.completed` сохраняется в ClickHouse.
-2. Сервис загружает все `task.checked` по `user_id + task_id`.
-3. Формирует контекст для внешнего intelligence API:
-   - task description;
-   - reference SQL;
-   - expected/actual result;
-   - все попытки пользователя;
-   - SQL каждой попытки;
-   - ошибки СУБД;
-   - hint requested/used/type/count;
-   - `graph_state` с навыками, порогами, effective mastery, dependencies;
-   - последние события `task.recommended`;
-   - последние `learner_model.updated`.
-4. Внешний модуль возвращает `mastery_score`, `recommended_skills`, `user_graph_overlay` и, при включённом `INTELLIGENCE_INCLUDE_CAREER`, карьерную рекомендацию.
-5. Сервис сохраняет request/response в `llm_analysis_runs` и публикует `analytics.skill_assessment.updated`.
-
-## Reference graphs read-only
-
-Сервис аналитики не изменяет reference graphs. Он не отправляет `graph_patch` для мутации `learning_graphs`, `graph_skills`, `skill_dependencies`. Любая рекомендация графа отправляется только как `user_graph_overlay`, который `task-progress` применяет в user-specific таблицы:
-
-```text
-user_graph_skill_overrides
-user_skill_dependency_overrides
-```
+recommended_skills отправляется как snapshot для пользователя и графа.
 
 ## ClickHouse
 
-Миграция находится в:
+Сервис пишет:
 
-```text
-migrations/000001_clickhouse_init.sql
-```
+- raw_events;
+- task_attempt_logs;
+- task_completion_logs;
+- task_recommendation_logs;
+- learner_model_update_logs;
+- llm_analysis_runs;
+- skill_assessment_logs;
+- skill_recommendation_logs;
+- hint_events.
 
-Можно выполнить вручную:
+request_context в llm_analysis_runs содержит internal task context, включая reference SQL и expected/user results. Это не public API.
 
-```bash
-clickhouse-client --multiquery --database analytics < migrations/000001_clickhouse_init.sql
-```
+## Reference graphs
 
-Или включить автоматическое создание таблиц:
-
-```env
-CLICKHOUSE_AUTO_MIGRATE=true
-```
+analytics-service не изменяет global reference graphs. Все user-specific изменения идут через user_graph_overlay, который применяет task-progress-service.
 
 ## API
 
-```text
-GET /health
-GET /ready
-```
+    GET  /health
+    GET  /ready
+    POST /internal/hints/generate
 
-## Запуск
+GET /health проверяет HTTP-процесс.
 
-```bash
-go mod tidy
-go test ./...
-docker compose -f docker-compose.example.yml up --build
-```
-
-## Важное для интеграции с task-progress
-
-`task-progress` блокирует `GET /tasks/next` после успешного решения задачи до ответа аналитики или до истечения soft timeout. Этот сервис публикует `analytics.skill_assessment.updated` синхронно в рамках обработки `task.completed`; после получения этого события `task-progress` завершает `user_analysis_state = pending` и разрешает выбор следующей задачи.
+GET /ready проверяет ClickHouse и внешний intelligence service.
 
 ## Hint generation
 
-`analytics-service` owns hint generation because it has the ClickHouse event log and can aggregate the context required by the external intelligence module.
-
 Internal endpoint:
 
-```http
-POST /internal/hints/generate
-```
+    POST /internal/hints/generate
 
 Request:
 
-```json
-{
-  "user_id": "...",
-  "task_id": "...",
-  "current_attempt_number": 2,
-  "request_id": "..."
-}
-```
+    {
+      "user_id": "...",
+      "task_id": "...",
+      "current_attempt_number": 2,
+      "request_id": "..."
+    }
 
-The service loads all `task.checked` attempts for the user/task from ClickHouse, adds task metadata, reference SQL, previous errors, previous hints and calls the external intelligence client. Successful hints are saved to `hint_events` and published as `analytics.hint.generated`.
+Сервис загружает историю попыток пользователя по задаче, task metadata, reference SQL, ошибки, предыдущие подсказки и вызывает внешний intelligence service.
 
-If the external module times out or fails, the response is:
+Успешные подсказки сохраняются в hint_events и публикуются как analytics.hint.generated.
 
-```json
-{"error":"hint_generation_failed"}
-```
+Если подсказка не сгенерирована, событие показа подсказки не сохраняется.
 
-Failed hints are intentionally not written to `hint_events`, because no hint was actually shown to the user.
+## Local commands
+
+    go test ./...
+    go run ./main.go
+
+## E2E path
+
+    playground-service
+    -> playground.execution.completed
+    -> task-progress-service
+    -> task.completed
+    -> analytics-service
+    -> external intelligence service
+    -> analytics.skill_assessment.updated
+    -> task-progress-service
+    -> learner model update
+    -> persisted next task
+
+Proof queries обычно смотрят:
+
+    ClickHouse:
+      llm_analysis_runs
+      skill_assessment_logs
+      learner_model_update_logs
+
+    Postgres task-progress:
+      user_skills
+      user_skill_assessment_versions
+      user_next_task_recommendations

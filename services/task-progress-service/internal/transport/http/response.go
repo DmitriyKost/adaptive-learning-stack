@@ -15,6 +15,7 @@ type errorResponse struct {
 }
 
 type analysisPendingResponse struct {
+	Status            string                    `json:"status"`
 	Error             string                    `json:"error"`
 	PendingTaskID     string                    `json:"pending_task_id,omitempty"`
 	PendingAttemptID  string                    `json:"pending_attempt_id,omitempty"`
@@ -37,7 +38,8 @@ func writeError(w http.ResponseWriter, err error) {
 			w.Header().Set("Retry-After", formatRetryAfter(pendingErr.RetryAfterSeconds))
 		}
 		state := pendingErr.State
-		writeJSON(w, http.StatusConflict, analysisPendingResponse{
+		writeJSON(w, http.StatusAccepted, analysisPendingResponse{
+			Status:            "pending",
 			Error:             domain.ErrAnalysisPending.Error(),
 			PendingTaskID:     state.PendingTaskID,
 			PendingAttemptID:  state.PendingAttemptID,
@@ -65,7 +67,7 @@ func writeError(w http.ResponseWriter, err error) {
 		status = http.StatusNotFound
 		code = domain.ErrNotFound.Error()
 	case errors.Is(err, domain.ErrAnalysisPending):
-		status = http.StatusConflict
+		status = http.StatusAccepted
 		code = domain.ErrAnalysisPending.Error()
 	case errors.Is(err, domain.ErrConflict):
 		status = http.StatusConflict
