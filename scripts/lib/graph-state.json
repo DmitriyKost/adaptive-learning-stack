@@ -1,0 +1,156 @@
+{
+  "phase": "Приоритет: inner_join",
+  "graph": "Базовый SQL",
+  "priority_skill": "inner_join",
+  "ready": true,
+  "ts": 1780427948,
+  "nodes": [
+    {
+      "id": "00000000-0000-0000-0000-000000000101",
+      "code": "select",
+      "name": "SELECT",
+      "position": 1,
+      "mastery": 0.9908,
+      "threshold": 0.65,
+      "confidence": 0.99,
+      "mastered": true
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000102",
+      "code": "where",
+      "name": "WHERE",
+      "position": 2,
+      "mastery": 0,
+      "threshold": 0.65,
+      "confidence": 0,
+      "mastered": false
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000103",
+      "code": "order_by",
+      "name": "ORDER BY",
+      "position": 3,
+      "mastery": 0,
+      "threshold": 0.6,
+      "confidence": 0,
+      "mastered": false
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000104",
+      "code": "group_by",
+      "name": "GROUP BY",
+      "position": 4,
+      "mastery": 0,
+      "threshold": 0.7,
+      "confidence": 0,
+      "mastered": false
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000105",
+      "code": "aggregate_functions",
+      "name": "Агрегатные функции",
+      "position": 5,
+      "mastery": 0,
+      "threshold": 0.7,
+      "confidence": 0,
+      "mastered": false
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000106",
+      "code": "having",
+      "name": "HAVING",
+      "position": 6,
+      "mastery": 0,
+      "threshold": 0.7,
+      "confidence": 0,
+      "mastered": false
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000107",
+      "code": "inner_join",
+      "name": "INNER JOIN",
+      "position": 7,
+      "mastery": 0,
+      "threshold": 0.7,
+      "confidence": 0,
+      "mastered": false
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000108",
+      "code": "left_join",
+      "name": "LEFT JOIN",
+      "position": 8,
+      "mastery": 0,
+      "threshold": 0.7,
+      "confidence": 0,
+      "mastered": false
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000109",
+      "code": "subquery",
+      "name": "Подзапросы",
+      "position": 9,
+      "mastery": 0,
+      "threshold": 0.75,
+      "confidence": 0,
+      "mastered": false
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000110",
+      "code": "cte",
+      "name": "CTE",
+      "position": 10,
+      "mastery": 0,
+      "threshold": 0.75,
+      "confidence": 0,
+      "mastered": false
+    }
+  ],
+  "edges": [
+    {
+      "source": "00000000-0000-0000-0000-000000000102",
+      "target": "00000000-0000-0000-0000-000000000101",
+      "strength": 1
+    },
+    {
+      "source": "00000000-0000-0000-0000-000000000103",
+      "target": "00000000-0000-0000-0000-000000000101",
+      "strength": 0.8
+    },
+    {
+      "source": "00000000-0000-0000-0000-000000000104",
+      "target": "00000000-0000-0000-0000-000000000101",
+      "strength": 1
+    },
+    {
+      "source": "00000000-0000-0000-0000-000000000105",
+      "target": "00000000-0000-0000-0000-000000000104",
+      "strength": 0.8
+    },
+    {
+      "source": "00000000-0000-0000-0000-000000000106",
+      "target": "00000000-0000-0000-0000-000000000104",
+      "strength": 1
+    },
+    {
+      "source": "00000000-0000-0000-0000-000000000107",
+      "target": "00000000-0000-0000-0000-000000000101",
+      "strength": 1
+    },
+    {
+      "source": "00000000-0000-0000-0000-000000000108",
+      "target": "00000000-0000-0000-0000-000000000107",
+      "strength": 0.8
+    },
+    {
+      "source": "00000000-0000-0000-0000-000000000109",
+      "target": "00000000-0000-0000-0000-000000000102",
+      "strength": 1
+    },
+    {
+      "source": "00000000-0000-0000-0000-000000000110",
+      "target": "00000000-0000-0000-0000-000000000107",
+      "strength": 0.8
+    }
+  ]
+}

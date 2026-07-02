@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Граф навыков · adaptive-sql</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#11161d; --grid:#1b2430;
+    --ink:#e6edf3; --muted:#8b98a5; --line:#30404f;
+    --accent:#3fb950; --warn:#d29922; --cold:#1f6feb;
+    --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
+    font-family:var(--mono);overflow:hidden}
+  #top{display:flex;align-items:baseline;gap:1rem;padding:.7rem 1.1rem;
+    border-bottom:1px solid var(--line);background:var(--panel)}
+  #top h1{font-size:.95rem;font-weight:600;letter-spacing:.02em;margin:0}
+  #phase{font-size:.78rem;color:var(--accent);border:1px solid var(--line);
+    padding:.12rem .5rem;border-radius:.3rem;background:#0a0e13}
+  #meta{margin-left:auto;font-size:.72rem;color:var(--muted)}
+  #wrap{position:absolute;inset:3.1rem 0 0 0}
+  svg{width:100%;height:100%;display:block;
+    background:
+      radial-gradient(circle at 1px 1px,var(--grid) 1px,transparent 0) 0 0/26px 26px}
+  .edge{stroke:var(--line);stroke-width:1.4;fill:none;
+    transition:stroke .4s,stroke-width .4s}
+  .edge.active{stroke:#2f5d8a;stroke-width:2}
+  .ring{fill:none;stroke:var(--muted);stroke-width:2.2;
+    stroke-dasharray:4 4;opacity:.7}
+  .prio{fill:none;stroke:#f0b429;stroke-width:4;opacity:0;
+    filter:drop-shadow(0 0 6px #f0b429)}
+  .prio.on{opacity:1;animation:pulse 1.4s ease-in-out infinite}
+  @keyframes pulse{
+    0%,100%{stroke-width:3;opacity:.75}
+    50%{stroke-width:6;opacity:1}
+  }
+  .prio-tag{font-size:12px;font-weight:700;fill:#f0b429;text-anchor:middle;
+    pointer-events:none;opacity:0}
+  .prio-tag.on{opacity:1}
+  .node circle.core{stroke:#0a0e13;stroke-width:2.5;
+    transition:fill .6s ease,r .4s ease}
+  .node text.code{font-size:16px;fill:var(--ink);font-weight:700;
+    text-anchor:middle;pointer-events:none}
+  .node text.sub{font-size:14px;fill:var(--muted);text-anchor:middle;
+    pointer-events:none;font-weight:600}
+  .node .check{font-size:22px;fill:#0a0e13;text-anchor:middle;
+    dominant-baseline:central;font-weight:700;pointer-events:none}
+  .legend{font-size:13px;fill:var(--muted)}
+  .legend rect{stroke:#0a0e13;stroke-width:1.5}
+</style>
+</head>
+<body>
+  <div id="top">
+    <h1>ГРАФ НАВЫКОВ</h1>
+    <span id="phase">ожидание данных…</span>
+    <span id="meta"></span>
+  </div>
+  <div id="wrap"><svg id="svg"></svg></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script>
+const SRC = "graph-state.json";
+const POLL = 1500;
+
+const svg = d3.select("#svg");
+let W = 0, H = 0;
+const root = svg.append("g");
+const gEdges = root.append("g");
+const gNodes = root.append("g");
+const gLegend = svg.append("g").attr("class","legend");
+
+// цвет по mastery: холодный(серый/синий) → тёплый(жёлтый) → зелёный
+const masteryColor = d3.scaleLinear()
+  .domain([0, 0.35, 0.7, 1])
+  .range(["#263241", "#1f6feb", "#d29922", "#3fb950"])
+  .clamp(true);
+
+// топологические слои: longest-path layering по зависимостям (target = пререквизит)
+function computeLayers(nodes, edges){
+  const id2node = new Map(nodes.map(n=>[n.id,n]));
+  // ребро source зависит от target → target должен быть выше (раньше)
+  const prereq = new Map(nodes.map(n=>[n.id,[]]));      // node -> [его пререквизиты]
+  const dependents = new Map(nodes.map(n=>[n.id,[]]));
+  edges.forEach(e=>{
+    if(id2node.has(e.source) && id2node.has(e.target)){
+      prereq.get(e.source).push(e.target);
+      dependents.get(e.target).push(e.source);
+    }
+  });
+  const depth = new Map();
+  function d(id, seen){
+    if(depth.has(id)) return depth.get(id);
+    if(seen.has(id)) return 0;            // защита от циклов
+    seen.add(id);
+    const ps = prereq.get(id)||[];
+    const v = ps.length ? 1 + Math.max(...ps.map(p=>d(p,seen))) : 0;
+    depth.set(id,v); return v;
+  }
+  nodes.forEach(n=>d(n.id,new Set()));
+  return depth;
+}
+
+function layout(nodes, edges){
+  const depth = computeLayers(nodes, edges);
+  const byLayer = d3.groups(nodes, n=>depth.get(n.id))
+    .sort((a,b)=>a[0]-b[0]);
+  const layers = byLayer.length;
+  const padX = 130, padTop = 80, padBot = 90;
+  // Шаг между слоями вдвое меньше прежнего «растянутого»; блок центрируем.
+  const span = H - padTop - padBot;
+  const rowH = layers>1 ? (span / (layers - 1)) / 2 : 0;
+  const usedH = rowH * (layers - 1);
+  const top0 = padTop + (span - usedH) / 2;   // центрирование по вертикали
+  byLayer.forEach(([lvl, ns], li)=>{
+    // стабильный порядок внутри слоя по position
+    ns.sort((a,b)=>a.position-b.position);
+    const colW = (W - 2*padX) / Math.max(1, ns.length);
+    ns.forEach((n,i)=>{
+      n.x = padX + colW*(i+0.5);
+      n.y = layers>1 ? top0 + rowH*li : padTop + span/2;
+    });
+  });
+}
+
+function radius(n){ return 34 + n.mastery*22; }   // 34..56
+
+function render(data){
+  const nodes = data.nodes, edges = data.edges;
+  if(!nodes.length){ return; }
+  const id2 = new Map(nodes.map(n=>[n.id,n]));
+  layout(nodes, edges);
+
+  // рёбра
+  const ln = gEdges.selectAll("path.edge").data(
+    edges.filter(e=>id2.has(e.source)&&id2.has(e.target)),
+    e=>e.source+"->"+e.target);
+  ln.exit().remove();
+  ln.enter().append("path").attr("class","edge")
+    .merge(ln)
+    .classed("active", e=>id2.get(e.target).mastered)
+    .attr("d", e=>{
+      const s=id2.get(e.source), t=id2.get(e.target);
+      const mx=(s.x+t.x)/2;
+      return `M${s.x},${s.y} C${mx},${s.y} ${mx},${t.y} ${t.x},${t.y}`;
+    });
+
+  // узлы
+  const nd = gNodes.selectAll("g.node").data(nodes, n=>n.id);
+  nd.exit().remove();
+  const enter = nd.enter().append("g").attr("class","node");
+  enter.append("circle").attr("class","prio");
+  enter.append("circle").attr("class","ring");
+  enter.append("circle").attr("class","core");
+  enter.append("text").attr("class","check");
+  enter.append("text").attr("class","code");
+  enter.append("text").attr("class","sub");
+  enter.append("text").attr("class","prio-tag");
+
+  const all = enter.merge(nd)
+    .attr("transform", n=>`translate(${n.x},${n.y})`);
+  all.select("circle.core")
+    .transition().duration(600)
+    .attr("r", radius)
+    .attr("fill", n=>masteryColor(n.mastery));
+  all.select("circle.ring")
+    .attr("r", n=>radius(n)+7)                     // кольцо порога
+    .style("opacity", n=>n.mastered?0:0.7);
+  all.select("text.check")
+    .text(n=>n.mastered?"✔":"")
+    .attr("dy", 1);
+  all.select("text.code")
+    .attr("y", n=>radius(n)+20)
+    .text(n=>n.name);
+  all.select("text.sub")
+    .attr("y", n=>radius(n)+38)
+    .text(n=>`m ${Math.round(n.mastery*100)}% / порог ${Math.round(n.threshold*100)}%`);
+
+  // Подсветка приоритетного навыка (выбран графом как следующий).
+  const prio = (data.priority_skill||"").toLowerCase();
+  const isPrio = n => prio && n.code && n.code.toLowerCase()===prio;
+  all.select("circle.prio")
+    .attr("r", n=>radius(n)+12)
+    .classed("on", isPrio);
+  all.select("text.prio-tag")
+    .attr("y", n=>-(radius(n)+16))
+    .text("ПРИОРИТЕТ")
+    .classed("on", isPrio);
+
+  // подпись фазы/мета
+  d3.select("#phase").text(data.phase ? data.phase : "состояние графа");
+  const done = nodes.filter(n=>n.mastered).length;
+  d3.select("#meta").text(
+    `${data.graph||""} · освоено ${done}/${nodes.length} · обновлено ${new Date().toLocaleTimeString()}`);
+  drawLegend();
+}
+
+function drawLegend(){
+  gLegend.attr("transform",`translate(20,${H-86})`);
+  gLegend.selectAll("*").remove();
+  const stops=[[0,"0%"],[0.5,"50%"],[1,"100%"]];
+  gLegend.append("text").attr("y",-8).text("mastery");
+  stops.forEach((s,i)=>{
+    gLegend.append("rect").attr("x",i*72).attr("width",66).attr("height",14)
+      .attr("fill",masteryColor(s[0]));
+    gLegend.append("text").attr("x",i*72).attr("y",32).text(s[1]);
+  });
+  gLegend.append("text").attr("x",0).attr("y",56)
+    .text("○ пунктир = порог · ✔ = навык освоен");
+}
+
+function resize(){
+  W = svg.node().clientWidth; H = svg.node().clientHeight;
+}
+window.addEventListener("resize", ()=>{ resize(); if(last) render(last); });
+
+let last = null;
+async function tick(){
+  try{
+    const r = await fetch(SRC + "?t=" + Date.now(), {cache:"no-store"});
+    if(r.ok){
+      const data = await r.json();
+      if(data.ready && data.nodes && data.nodes.length){ last = data; render(data); }
+      else d3.select("#phase").text("ожидание выполнения задания…");
+    }
+  }catch(e){ /* файл ещё не создан — ждём */ }
+  setTimeout(tick, POLL);
+}
+resize(); tick();
+</script>
+</body>
+</html>
